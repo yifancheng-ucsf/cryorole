@@ -1,0 +1,2 @@
+Sample/condensing_domain.star filter=lfs diff=lfs merge=lfs -text
+Sample/modifying_domain.star filter=lfs diff=lfs merge=lfs -text

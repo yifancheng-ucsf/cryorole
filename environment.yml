@@ -1,0 +1,14 @@
+name: cryorole
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - mpi4py
+  - pip
+  - pip:
+    - .  # This means install your package (located in current directory) via pip
+
