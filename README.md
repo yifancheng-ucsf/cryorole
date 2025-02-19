@@ -236,7 +236,7 @@ To visualize the landscape in 3D, a ChimeraX Python script—developed with the 
 
     *Note:* You must choose one mode when loading a file. In either case, the point cloud is displayed in 3D and colored by the RND value.
 
-1.  **Updating an Existing Point Cloud**\
+3.  **Updating an Existing Point Cloud**\
     After loading a point cloud from your CSV file, you can adjust the view with the command `view` in ChimeraX, then update filtering/coloring with `points update`. For example, to hide points with `RND` values less than 0.6:
 
 
@@ -259,7 +259,7 @@ To visualize the landscape in 3D, a ChimeraX Python script—developed with the 
 
         points update #1 minValue 0.6 palette 0.6,#0000ff10:0.8,#ff00ff10:1.0,#ffff0099:1.2,red
 
-2.  **Creating a Map from the Point Cloud**
+4.  **Creating a Map from the Point Cloud**
     Generate an mrc map from the loaded point cloud model by placing a Gaussian at each point position. The standard deviation (`sdev`) is 1 by default, and the grid spacing (`gridSpacing`) is also 1 (recommand use full bounds based on the model’s mode):
 
         points map #1 full_bounds true
