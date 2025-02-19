@@ -90,10 +90,15 @@ Below is a brief usage summary for main scripts. Use the `--help` flag for detai
 *   Key Arguments:
 
 > `--s1` / `--s2`: The two input .star files to compute.
+
 > `--o`: Output prefix for the CSV files and other output.
+
 > `--k`: Number of nearest neighbors for RND calculation (default = 30).
+
 > `--autoalign`: If set, computes and applies IMR alignment, producing “\_before\_alignment.csv” and “\_after\_alignment.csv”.
+
 > `--apply_rotation`: Apply a known rotation (ROT, TILT, PSI) to all particles before processing.
+
 > `--outlier_method`: Method to identify outliers ('IQR' or 'Z-score').
 
 ### landscape\_projection
@@ -109,16 +114,27 @@ Below is a brief usage summary for main scripts. Use the `--help` flag for detai
 *   Key Arguments:
 
 > `--i`: Input CSV file from **orientation_analysis**.
+
 > `--o`: Output prefix for generated plots (`.pdf`,`.png`,`.svg`).
+
 > `--bins`: Number of bins in histograms (default = 50).
+
 > `--t`: RND threshold for filtering (fixed value).
+
 > `--p`: Percentage-based threshold (e.g., “keep top X% of RND”).
+
 >  * If neigher `--t` nor `--`p is set, the default threshold is set to  (RND\_max/3).
+
 >
+
 > `--angle_limits`: Limits for Euler angles: Alpha\_min Alpha\_max Beta\_min Beta\_max Gamma\_min Gamma\_max, default=`[-180.0, 180.0, -180.0, 180.0, -180.0, 180.0]`.
+
 > `--rotvec_limits`: Limits for Rotation vectors: RotVec\_X\_min RotVec\_X\_max RotVec\_Y\_min RotVec\_Y\_max RotVec\_Z\_min RotVec\_Z\_max, default=`[-3.14, 3.14, -3.14, 3.14, -3.14, 3.14]`.
+
 > `--vmin, --vmax`: Color scale limits for scatter plots. Default would be the RND\_threshold and RND\_max.
+
 > `--generate_histogram`: If set, plot the histogram of the columns.
+
 > `--generate_azimuth_elevation`: If set, computes Azimuth/Elevation from rotation vectors and plots them.
 
 ### point\_select
@@ -134,9 +150,13 @@ Below is a brief usage summary for main scripts. Use the `--help` flag for detai
 *   Key Arguments:
 
 > `--i`: Input CSV file (must have Alpha, Beta, Gamma columns).
+
 > `--c`: Center coordinates of the “sphere” in (Alpha, Beta, Gamma) space.
+
 > `--r`: Radius of the sphere.
+
 > `--l`: Optional pairs of column labels and values for additional filtering.
+
 > `--o`: Output CSV file with selected points. If not provided,  the number of matching particles is displayed in the terminal but without saved.
 
 ### particle\_backtrack
@@ -152,7 +172,9 @@ Below is a brief usage summary for main scripts. Use the `--help` flag for detai
 *   Key Arguments:
 
 > `--i`: The CSV file containing selected particles. Must have an `ID` column.
+
 > `--s`: The original `.star` file with the full dataset.
+
 > `--o`: Name of the `.star` file to write the subset to.
 
 ## EXAMPLE\_WORKFLOW:
