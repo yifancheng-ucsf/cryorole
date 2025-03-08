@@ -80,7 +80,7 @@ def select_points_in_sphere(csv_file, center, radius, labels=None):
 
     return filtered_df
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Select points within a specified spherical region from a CSV file.")
     parser.add_argument('--i', dest='input', required=True, help="Path to the input CSV file.")
     parser.add_argument('--c', dest='center', nargs=3, type=float, required=True, help="Center of the sphere (Alpha Beta Gamma).")
@@ -97,3 +97,6 @@ if __name__ == "__main__":
         print(f"Filtered results saved to {args.output}")
     elif result_df is not None and args.output is None:
         print("No output file specified. Results are not saved.")
+
+if __name__ == '__main__':
+    main()
