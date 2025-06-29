@@ -266,12 +266,12 @@ def main():
 
         idx = i
         data_before = {
-            'Alpha': euler_angles[0] * -1,
-            'Beta': euler_angles[1] * -1,
-            'Gamma': euler_angles[2] * -1,
-            'RotVec_X': rotvec[0] * -1,
-            'RotVec_Y': rotvec[1] * -1,
-            'RotVec_Z': rotvec[2] * -1,
+            'Alpha': euler_angles[0],
+            'Beta': euler_angles[1],
+            'Gamma': euler_angles[2],
+            'RotVec_X': rotvec[0],
+            'RotVec_Y': rotvec[1],
+            'RotVec_Z': rotvec[2],
             'Rotation_Angle': rotation_angle,
             'Tx': OriginX,
             'Ty': OriginY,
