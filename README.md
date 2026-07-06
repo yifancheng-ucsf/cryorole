@@ -1,11 +1,11 @@
 # cryoROLE
 
 cryoROLE (cryo-EM Relative Orientation LandscapE) is a tool for describing
-large inter-domain rotational dynamics in single-particle cryo-EM. It is
-designed for complexes where two near-rigid domains, modules, or subcomplexes
-can be refined separately from the same particle set. For each matched
-particle, cryoROLE computes the relative orientation between the two domains and
-represents the particle population as a relative-orientation landscape.
+inter-domain rotational dynamics in single-particle cryo-EM. It is designed for 
+complexes where two near-rigid domains, modules, or subcomplexes can be refined 
+separately from the same particle set. For each matched particle, cryoROLE 
+computes the relative orientation between the two domains and represents the 
+particle population as a relative-orientation landscape.
 
 The landscape can be used to inspect continuous domain motion, identify densely
 sampled orientation states, select particles from a region of the landscape, and
@@ -43,11 +43,6 @@ python -m pip install .
 cryorole --help
 ```
 
-For development or tests:
-
-```bash
-python -m pip install -e ".[test]"
-```
 
 See [Installation](docs/installation.md) for conda and verification notes.
 
