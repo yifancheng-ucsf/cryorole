@@ -1,0 +1,39 @@
+# Python cache and test cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+
+# IDE and local tool state
+.idea/
+.vscode/
+.codex_tmp/
+
+# cryoROLE local outputs
+cryorole_outputs/
+selection_out/
+alignments/
+
+# Historical archives and local bundles
+*.zip
+*.rar
+*.7z
+
+# Large cryo-EM metadata/map files and local data products
+*.mrc
+*.map
+*.cs
+*.star
+
+# Future small fixtures/examples may opt in explicitly, for example:
+#!tests/fixtures/**
+#!examples/**
+
+# OS files
+.DS_Store
+Thumbs.db

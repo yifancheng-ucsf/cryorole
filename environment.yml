@@ -2,13 +2,12 @@ name: cryorole
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
+  - python>=3.9
+  - matplotlib
   - numpy
   - pandas
-  - matplotlib
   - scipy
-  - mpi4py
+  - pytest
   - pip
   - pip:
-    - .  # This means install your package (located in current directory) via pip
-
+      - -e .[test]

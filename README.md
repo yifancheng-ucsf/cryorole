@@ -1,311 +1,334 @@
-# CryoROLE: Cryo-EM Relative Orientation LandscapE
+# cryoROLE
 
-**CryoROLE** is a python package designed to analyze the particle distribution of the relative orientation between two independently refined domains of a biological complex. The landscape is represented in angular (real) space. Detailed description of the orientational landscape can be found in the (bioRxiv link).
+cryoROLE (cryo-EM Relative Orientation LandscapE) is a tool for describing
+large inter-domain rotational dynamics in single-particle cryo-EM. It is
+designed for complexes where two near-rigid domains, modules, or subcomplexes
+can be refined separately from the same particle set. For each matched
+particle, cryoROLE computes the relative orientation between the two domains and
+represents the particle population as a relative-orientation landscape.
 
-When two domains of a complex are independently refined to high-resolution, each particle in the dataset is assigned two set of Euler angles for both domains. Thus, there are two `.star` files in Relion (or two `.cs` files in CryoSPARC) corresponding to the same dataset in the final reconstruction. CryoROLE takes these two .star files as inputs and computes, for every particle, the relative orientation of the first domain with respect to the second. By plotting this orientations of every particle in an angular space, the program generates a particle distribution “landscape” that reflects both the range of motion between the domains and the probability of different orientations. Users can then visualize and select specific regions of the landscape to generate 3D reconstructions with defined orientation between two domains.
+The landscape can be used to inspect continuous domain motion, identify densely
+sampled orientation states, select particles from a region of the landscape, and
+export the selected source metadata for downstream RELION or CryoSPARC
+reconstruction.
 
-## Table of Contents
+## Citation
 
-*   [INSTALLATION](#installation)
-*   [PREREQUISITES](#prerequisites)
-*   [USAGE](#usage)
-    * [orientation_analysis](#orientation_analysis)
-    * [landscape_projection](#landscape_projection)
-    * [point_select](#point_select)
-    * [particle_backtrack](#particle_backtrack)
-*   [EXAMPLE\_WORKFLOW](#example_workflow)
-*   [3D_Visualization_in_ChimeraX](#3d_visualization_in_chimerax)
-*   [FAQ](#faq)
+If you use cryoROLE as a method, please cite the cryoROLE methodology preprint:
 
-## INSTALLATION:
+- Chengmin Li, Wooyoung Choi, Hao Wu, Yifan Cheng. **CryoROLE: describing large
+  inter-domain rotation in single particle cryo-EM.** bioRxiv, 2026.
+  [https://www.biorxiv.org/content/10.64898/2026.07.04.736454v1](https://www.biorxiv.org/content/10.64898/2026.07.04.736454v1)
 
-1\.  Clone the repository and cd inside
+The first application of cryoROLE was in the human fatty acid synthase study:
 
-    git clone https://github.com/yifancheng-ucsf/cryorole.git
-    cd cryorole
+- Wooyoung Choi, Chengmin Li, Yifei Chen, YongQiang Wang, Yifan Cheng.
+  **Structural dynamics of human fatty acid synthase in the condensing cycle.**
+  Nature, 2025. [https://doi.org/10.1038/s41586-025-08782-w](https://doi.org/10.1038/s41586-025-08782-w)
 
+## Status
 
-2\.  Create a conda environment with the required dependencies
+This repository currently contains the cryoROLE 2.0.0a1 beta-preview workflow.
+The command-line workflow is the supported public interface. MPI-enabled
+large-scale execution and a GUI are in development.
 
+## Installation
 
+From a GitHub checkout:
 
-    conda env create -f environment.yml
+```bash
+git clone https://github.com/yifancheng-ucsf/cryorole.git
+cd cryorole
+python -m pip install .
+cryorole --help
+```
 
-3\.  Activate the environment(always do this before using OrientationLandscape)
+For development or tests:
 
+```bash
+python -m pip install -e ".[test]"
+```
 
+See [Installation](docs/installation.md) for conda and verification notes.
 
-    conda activate cryorole
+## Workflow
 
-4\.  Verify the installation
+The public workflow is:
 
+```text
+align (optional) -> run RO compute -> canonicalize (optional) -> visualize -> select -> export
+```
 
+- `align` is only needed when STAR metadata cannot be safely matched by the
+  default identity columns and you want to prepare row-aligned STAR files.
+- `run` computes the raw relative-orientation (RO) landscape and writes a run
+  bundle.
+- `canonicalize` is optional. It derives a reusable coordinate frame that makes
+  the landscape easier to inspect and compare; it does not overwrite the raw
+  landscape.
+- `visualize` makes display-only plots.
+- `select` creates an explicit scientific particle-selection artifact.
+- `export` subsets the original source metadata using the recorded selection.
 
-    orientation_analysis --help
+## Quick Start
 
-## Prerequisites:
+The examples below use the default run directory, `cryorole_outputs/`.
 
-#### About the input: Two Star Files
+### 1. Decide whether your inputs are already aligned
 
-The two `.star` files must:
-1, Contain the same number of particles.
-2, Have the same particle ordering (i.e., particle 1 in both .star files refers to the same image).
-3, Include columns such as `_rlnAngleRot`, `_rlnAngleTilt`, `_rlnAnglePsi`, `_rlnOriginXAngst`, `_rlnOriginYAngst`, etc.
+If row `N` in both metadata files is known to be the same particle, you can use
+row-aligned mode:
 
-*Note:* If your reconstruction is done in CryoSPARC, you can use pyem to convert the `.cs` files to `.star` files.
+```bash
+cryorole run --ref aligned_ref.star --mov aligned_mov.star --row-aligned
+```
 
-#### Required Python Libraries
+If you are not sure whether the files are already aligned, do not use
+`--row-aligned`. Let cryoROLE resolve particle identity and report whether rows
+were reordered or dropped:
 
-*   numpy
-*   pandas
-*   matplotlib
-*   scipy
-*   mpi4py (for parallel execution)
+```bash
+cryorole run --ref REF.star --mov MOV.star
+```
 
-#### MPI Environment (optional but recommended)
+For CryoSPARC `.cs` inputs, default matching uses `uid`:
 
-For parallel execution `orientation_analysis`, you will need an MPI implementation like OpenMPI or MPICH.
+```bash
+cryorole run --ref REF.cs --mov MOV.cs
+```
 
-## Usage:
+For RELION STAR inputs, cryoROLE first tries `_rlnTomoParticleName`, then
+`_rlnImageName` / `rlnImageName` when safe. If default matching is not possible,
+prepare aligned STAR files:
 
-Below is a brief usage summary for main scripts. Use the `--help` flag for detailed arguments, default values, and optional flags.
+```bash
+cryorole align --ref REF.star --mov MOV.star
+cryorole run \
+  --ref alignments/default/aligned_ref.star \
+  --mov alignments/default/aligned_mov.star \
+  --row-aligned
+```
 
-### orientation\_analysis
+### 2. Inspect the raw landscape
 
-1, Computes the relative orientation of each particle from two independent `.star` files.
-2, Generates a CSV file containing per-particle relative orientation expressed in euler angle space (Z-Y-X）and rotation vectors, translation distance, RND scores, etc.
-3, The Related\_Neighbor\_Density(RND) is used to color and filter data points. It is defined as ratio representing local density around each data point and is designed to remain comparable even across different datasets with different particle number counts.
-4, Optionally compute and apply Inverse Mean Rotation (IMR) to align the orientation distribution to remove global orientation biases.
+`cryorole run` writes default quick-look visualizations. You can also make
+explicit raw visualizations:
 
-*   Basic Usage (Serial):
-    ```
-    orientation_analysis --s1 <star_file_1> --s2 <star_file_2> --o <output_prefix>
-    ```
+```bash
+cryorole visualize --run-dir cryorole_outputs --space raw
+```
 
-*   Parallel Usage(Recommended):
-    ```
-    mpirun -n <X> orientation_analysis --s1 <star_file_1> --s2 <star_file_2> --o <output_prefix>
-    ```
-    
-*   Key Arguments:
+### 3. Optionally canonicalize
 
-> `--s1` / `--s2`: The two input .star files to compute.
+Canonicalization is optional. It rotates/re-expresses the landscape into a
+consistent coordinate frame so that the main motion is easier to view and
+compare. It is a derived coordinate frame and does not change the raw RO
+landscape.
 
-> `--o`: Output prefix for the CSV files and other output.
+```bash
+cryorole canonicalize --run-dir cryorole_outputs
+```
 
-> `--k`: Number of nearest neighbors for RND calculation (default = 30).
+Then visualize the canonical landscape:
 
-> `--autoalign`: If set, computes and applies IMR alignment, producing “\_before\_alignment.csv” and “\_after\_alignment.csv”.
+```bash
+cryorole visualize --run-dir cryorole_outputs --space canonical
+```
 
-> `--apply_rotation`: Apply a known rotation (ROT, TILT, PSI) to all particles before processing.
+### 4. Select particles
 
-> `--outlier_method`: Method to identify outliers ('IQR' or 'Z-score').
+For a radius selection around a canonical Euler center:
 
-### landscape\_projection
+```bash
+cryorole select \
+  --run-dir cryorole_outputs \
+  --selection-id state_1 \
+  --space canonical \
+  -c 13 0 14 \
+  -r 6
+```
 
-1, Visualize the CSV output from **orientation_analysis** by generating 2D projections of the orientation data (Euler angles, rotation vectors, etc.).
-2, Optionally plot histograms of Alpha/Beta/Gamma, rotation angles, distances, RND scores, etc.
-3, Optionally generate Azimuth-Elevation maps if requested.
+By default, radius selection uses SO(3) geodesic distance, not simple Euclidean
+distance in Euler-angle space.
 
-*   Usage:
-    ```
-    landscape_projection --i <csv_file> --o <output_prefix>
-    ```
-*   Key Arguments:
+### 5. Export selected metadata
+
+```bash
+cryorole export \
+  --run-dir cryorole_outputs \
+  --selection-id state_1 \
+  --domain both
+```
 
-> `--i`: Input CSV file from **orientation_analysis**.
+Export subsets the original source metadata using recorded source-row
+provenance. It does not rewrite source poses with canonical or display
+coordinates.
 
-> `--o`: Output prefix for generated plots (`.pdf`,`.png`,`.svg`).
+## CLI Summary
 
-> `--bins`: Number of bins in histograms (default = 50).
+Use `cryorole COMMAND --help` for the exact current options.
+
+### `cryorole align`
+
+Prepare RELION STAR files for `cryorole run --row-aligned`.
+
+Common options:
 
-> `--t`: RND threshold for filtering (fixed value).
-
-> `--p`: Percentage-based threshold (e.g., “keep top X% of RND”).
-
->  * If neigher `--t` nor `--`p is set, the default threshold is set to  (RND\_max/3).
-
->
-
-> `--angle_limits`: Limits for Euler angles: Alpha\_min Alpha\_max Beta\_min Beta\_max Gamma\_min Gamma\_max, default=`[-180.0, 180.0, -180.0, 180.0, -180.0, 180.0]`.
-
-> `--rotvec_limits`: Limits for Rotation vectors: RotVec\_X\_min RotVec\_X\_max RotVec\_Y\_min RotVec\_Y\_max RotVec\_Z\_min RotVec\_Z\_max, default=`[-3.14, 3.14, -3.14, 3.14, -3.14, 3.14]`.
-
-> `--vmin, --vmax`: Color scale limits for scatter plots. Default would be the RND\_threshold and RND\_max.
-
-> `--generate_histogram`: If set, plot the histogram of the columns.
-
-> `--generate_azimuth_elevation`: If set, computes Azimuth/Elevation from rotation vectors and plots them.
-
-### point\_select
-
-1, Filters a CSV file to select particles whose Euler angles fall within a certain spherical region .
-2, Optionally applies additional filtering based on other column-value pairs.
-
-*   Usage:
-    ```
-    point_select --i <csv_file> --c <Alpha> <Beta> <Gamma> --r <radius> [--o <output_csv>]
-    ```
-    
-*   Key Arguments:
-
-> `--i`: Input CSV file (must have Alpha, Beta, Gamma columns).
-
-> `--c`: Center coordinates of the “sphere” in (Alpha, Beta, Gamma) space.
-
-> `--r`: Radius of the sphere.
-
-> `--l`: Optional pairs of column labels and values for additional filtering.
-
-> `--o`: Output CSV file with selected points. If not provided,  the number of matching particles is displayed in the terminal but without saved.
-
-### particle\_backtrack
-
-1, Maps a subset of particles (specified by their `ID` column in the CSV file) back to the original `.star` file.
-2, Output a new `.star` file containing only the rows corresponding to the selected particles.
-
-*   Usage:
-    ```
-    particle_backtrack --i <extracted_csv>  --s <original_star_file> --o <output_star_file>
-    ```
-    
-*   Key Arguments:
-
-> `--i`: The CSV file containing selected particles. Must have an `ID` column.
-
-> `--s`: The original `.star` file with the full dataset.
-
-> `--o`: Name of the `.star` file to write the subset to.
-
-## EXAMPLE\_WORKFLOW:
-
-In the folder `Sample`, two example `.star` files are provided:, `modifying_domain.star` and `condensing_domain.star`, These files correspond to separate domain refinements (as used in Nature Article <https://www.nature.com/articles/s41586-025-08782-w>). 
-
-#### 1. Compute relative orientations relationship:
-    
-    mpirun -n 10 orientation_analysis --s1 modifying_domain.star --s2 condensing_domain.star --o modifying_against_condensing
-
-This produces `modifying_against_condensing.csv` and `modifying_against_condensing.csv`(the points which have extreamly large RND have been declude, and in this dataset, it was 0).
-
-If `--autoalign` is used, additional output `modifying_against_condensing_after_alignment.csv`.
-
-#### 2. Visulize the orientation landscape projectons:
-
-    landcape_projection --i modifying_against_condensing.csv --o modifying_against_condensing_visualization --p 0.4 
-
-This produces plots with root name `modifying_against_condensing_visualization` in  SVG, PDF, and PNG formats showing the projections in euler space or rotation vector space with the top 40% RND filtered points. If `--generate_histogram` is used, the histogram of `Alpha`, `Beta`,`Gamma`, `RND` and `rotation angle` and `distance` would also generated.
-
-You can further zoom the projections into specific ranges with the command `--angle_limits`:
-
-    landcape_projection --i modifying_against_condensing.csv --o modifying_against_condensing_visualization_zoom --p 0.4 --angle_limits -90 90 -90 90 -90 -90 --rotvec_limits -1.57 1.57 -1.57 1.57 -1.57 1.57
-
-#### 3. Select the points in a specified coordinate with a spherical region:
-
-    point_select --i domain1_against_domain2.csv --c 13 0 14 --r 6  --o modifying_against_condensing_center_13_0_14_radius_6.csv
-
-Here `(13,0,14)` in `Alpha, Beta, Gamma` space is the center and 6 is the radius, the selected points get saved to `modifying_against_condensing_center_13_0_14_radius_6.csv`.You can adjust the coordinate and radius as you need.
-
-*Tips:*
-`--o` is an optinal parameter here, If you just want to test how many particles can be extracted at a certain position and radius, `--o` is not required and the terminal will directly output information like: *Extracted 2580 particles inside the sphere defined by center\_13.0\_0.0\_14.0\_radius\_6.0*.
-
-#### 4. Backtrack the selected points to original star file:
-
-    python ParticleBacktrack.py --i modifying_against_condensing_center_13_0_14_radius_6.csv --s condensing_domain.star  --o modifying_against_condensing_center_13_0_14_radius_6_back_to_condensing.star
-
-This produces a new `modifying_against_condensing_center_13_0_14_radius_6_back_to_condensing.star` file containing only the subset of particles within the specified spherical region. This subset can then be used for 3D reconstruction, local refinement, or further analysis. 
-
-## 3D\_Visualization\_in\_ChimeraX:
-
-To visualize the landscape in 3D, a ChimeraX Python script—developed with the help of Tom Goddard, **Points_in_ChimeraX.py**—is provided. This script registers custom commands for loading, updating, and displaying point cloud data from the CSV output of **orientation_analyisi**. The script supports two different modes for point cloud data:
-
-*   **Euler Mode**: Uses Euler angles (`Alpha`, `Beta`, `Gamma`) with full bounds of `(-180, 180, -90, 90, -180, 180)`.
-*   **Rotation Vector Mode**: Uses rotation vector components (`RotVec_X`, `RotVec_Y`, `RotVec_Z`) with full bounds of `(-3.14, 3.14, -3.14, 3.14, -3.14, 3.14)`.
-
-### Features
-
-*   **Load**: Load a new point cloud file with the command `points load`.
-*   **Update**: Update filtering and coloring parameters on an already loaded point cloud with `points update`.
-*   **Map**: Create a Gaussian-based mrc map from the point cloud with `points map`.
-
-### Requirements
-
-*   **ChimeraX**
-
-### Usage
-
-1.  **Load the script in ChimeraX:**
-    Open ChimeraX and load the script by running at Command Line:
-
-        open /path/to/Points_in_ChimeraX.py
-
-    After loading the script in ChimeraX, the following commands will be available:
-
-2.  **Loading a Point Cloud File**
-
-*   **Euler Mode**
-    Loads a file to display 3D point cloud using Euler angles (expects headers: `Alpha`, `Beta`, `Gamma`, `RND`):
-
-        points load euler /path/to/yourfile.csv
-
-    The full bounds used for mapping will be set to `(-180, 180, -90, 90, -180, 180)`.
-
-*   **Rotation Vector Mode**
-    Loads a file to display 3D point cloud using rotation vector components (expects headers: `RotVec_X`, `RotVec_Y`, `RotVec_Z`, `RND`):
-
-        points load rotvec /path/to/yourfile.csv
-
-    The full bounds used for mapping will be set to `(-3.14, 3.14, -3.14, 3.14, -3.14, 3.14)`.
-
-    *Note:* You must choose one mode when loading a file. In either case, the point cloud is displayed in 3D and colored by the RND value.
-
-3.  **Updating an Existing Point Cloud**\
-    After loading a point cloud from your CSV file, you can adjust the view with the command `view` in ChimeraX, then update filtering/coloring with `points update`. For example, to hide points with `RND` values less than 0.6:
-
-
-        points update #1 min_value 0.6
-
-    Here, `#1` is the model number created when you opened the data. If you load more than one point cloud, be sure to specify the correct model. You can also update the coloring range:
-
-
-        points update #1 minValue 0.6 range 0.6,2.0
-
-    By default, the script applies a rainbow colormap over the full range of values (e.g., 0.6 to 2.0 in this case). To see all available options, type:
-
-        usage points update
-
-    *points update pointsModel \[palette a colormap] \[colorRange colorRange] \[minValue a number] \[maxValue a number]
-    Update filtering and coloring of an existing point cloud
-    colorRange: some numbers or full*
-
-    You can specify a detailed colormap as follows:
-
-        points update #1 minValue 0.6 palette 0.6,#0000ff10:0.8,#ff00ff10:1.0,#ffff0099:1.2,red
-
-4.  **Creating a Map from the Point Cloud**
-    Generate an mrc map from the loaded point cloud model by placing a Gaussian at each point position. The standard deviation (`sdev`) is 1 by default, and the grid spacing (`gridSpacing`) is also 1 (recommand use full bounds based on the model’s mode):
-
-        points map #1 full_bounds true
-
-    To see addinational options, use "usage" command:
-
-        usage points map
-
-    *points map pointsModel \[sdev a number] \[gridSpacing a number] \[bounds bounds] \[fullBounds true or false]
-    Create a map by placing a Gaussian at each point of a point cloud
-    bounds: some numbers*
-    
-    The map can be saved to an MRC file use:
-    ```
-    save test.mrc model #2
-    ```
-    
-## FAQ
-
-1.  **How do I ensure that the particle number and order in the two star files are identical?**
-2.  **Does the sample size affect the landscape pattern?**
-3.  **How can I validate that the generated landscape is correct?**
-4.  **If my dataset contains multiple sub-states (e.g., from RELION 3D classification or different experimental conditions), how can I quickly obtain the landscape for each sub-state?**
-5.  **Can landscapes from multiple sub-states be directly compared?**
-6.  **When comparing landscapes from two similar samples refined with different initial models, what is the correct approach for comparison?**
-7.  **Why does the landscape generated from my data only have a very small point in the center?**
-
+| Option | Meaning |
+|---|---|
+| `--ref REF` | Reference STAR metadata. |
+| `--mov MOV` | Moving-domain STAR metadata. |
+| `--align-id ID` | Output id under `alignments/`; default `default`. |
+| `--key COL [COL ...]` | Explicit STAR key columns. |
+| `--float-tol COL=TOL` | Tolerance for numeric key columns; may repeat. |
+| `--path-mode exact|basename|suffix:N` | Normalize path-like keys. |
+| `--duplicate-policy exclude|first` | Duplicate key handling. |
+| `--overwrite` | Replace artifacts for the same align id. |
+
+### `cryorole run`
+
+Compute the raw relative-orientation landscape.
+
+Common options:
+
+| Option | Meaning |
+|---|---|
+| `--ref REF` | Reference-domain pose metadata, STAR or CS. |
+| `--mov MOV` | Moving-domain pose metadata, STAR or CS. |
+| `--ref-domain NAME` | Provenance label for the reference domain. |
+| `--mov-domain NAME` | Provenance label for the moving domain. |
+| `--row-aligned` | Assert row `N` in ref and mov is the same particle. |
+| `--no-visualize` | Skip default raw quick-look plots. |
+
+### `cryorole canonicalize`
+
+Optionally derive a canonical coordinate frame from a run bundle.
+
+Common options:
+
+| Option | Meaning |
+|---|---|
+| `--run-dir RUN` | Existing cryoROLE run bundle. |
+| `--canonical-id ID` | Output id under `RUN/canonical/`; default `default`. |
+| `--fit-top F` | Highest-`sld_raw` fraction used for frame fitting. |
+| `--positive-side low|high` | Axis sign direction policy. |
+| `--use-frame FRAME` | Apply an existing canonical frame. |
+| `--no-visualize` | Skip canonical quick-look plots. |
+
+### `cryorole visualize`
+
+Render display-only views from raw, canonical, or selected landscapes.
+
+Common options:
+
+| Option | Meaning |
+|---|---|
+| `--run-dir RUN` | Existing run bundle. |
+| `--space raw|canonical` | Landscape space to visualize. |
+| `--selection-id ID` | Visualize rows from a selection. |
+| `--visual-id ID` | Output id under `visualizations/`. |
+| `--representation euler|rotvec|both` | Coordinate representation to plot. |
+| `--top-fraction F` | Display-only high-density filter. |
+| `--threshold VALUE` | Display-only SLD threshold. |
+| `--range AXIS:LOWER:UPPER` | Display-only coordinate range. |
+| `--formats png,svg,pdf` | Figure format list. |
+
+### `cryorole select`
+
+Create an explicit particle-selection artifact.
+
+Common options:
+
+| Option | Meaning |
+|---|---|
+| `--run-dir RUN` | Existing run bundle. |
+| `--selection-id ID` | Selection id under `RUN/selections/`. |
+| `--space raw|canonical` | Parent landscape space. |
+| `--mode radius|threshold|range|random|metadata` | Selection mode. |
+| `-c A B C`, `--center A B C` | Radius center; Euler degrees by default. |
+| `-r DEG`, `--radius DEG` | Radius in degrees. |
+| `--radius-rad RAD` | Radius in radians. |
+| `--metric so3|rotvec` | Radius metric; default `so3`. |
+| `--sld-min`, `--sld-max` | `sld_raw` threshold bounds. |
+| `--metadata-domain ref|mov` | Metadata domain for metadata selection. |
+| `--metadata-column COLUMN` | Source metadata column. |
+| `--metadata-value VALUE[,VALUE...]` | Metadata values to include. |
+| `--write-selected-landscape` | Also write a selected-derived landscape. |
+
+### `cryorole export`
+
+Export selected source metadata.
+
+Common options:
+
+| Option | Meaning |
+|---|---|
+| `--run-dir RUN` | Existing run bundle. |
+| `--selection-id ID` | Selection id to export. |
+| `--domain ref|mov|both` | Source metadata domain to export. |
+| `--format auto|relion_star|cryosparc_cs|keys` | Export format. |
+| `--output-dir DIR` | Advanced output override. |
+| `--overwrite` | Replace export artifacts in the output directory. |
+
+## Outputs
+
+A cryoROLE run bundle records numeric data, tables, reports, visualizations,
+selections, exports, and provenance:
+
+```text
+run_manifest.json
+run_summary.json
+data/raw_landscape.npz
+data/raw_landscape.csv
+data/match_table.csv
+reports/
+visualizations/
+canonical/
+selections/
+exports/
+```
+
+`data/raw_landscape.npz` is the machine-readable source of truth for the raw
+landscape. `data/raw_landscape.csv` is a flat table for inspection and external
+tools. JSON files are reports, summaries, and manifests.
+
+## Key Concepts
+
+- Raw landscape: direct relative-orientation result from matched input
+  particles.
+- Canonical landscape: optional derived coordinate frame for inspection and
+  comparison.
+- Visualization filters: display-only choices; they do not create scientific
+  selections.
+- Selections: explicit decision artifacts that can be exported.
+- `sld_raw`: the scientific SLD density field used by default policies.
+- `sld_display`: a display-only density/color field.
+- Export uses recorded source-row provenance and does not rewrite source poses.
+
+## More Documentation
+
+- [Installation](docs/installation.md)
+- [Quick start](docs/quick_start.md)
+- [RELION workflow](docs/relion_workflow.md)
+- [CryoSPARC workflow](docs/cryosparc_workflow.md)
+- [Output files](docs/output_files.md)
+- [Migration from cryoROLE 0.x](docs/migration_from_0x.md)
+- [Architecture contract](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
+
+## Notes for cryoROLE 0.x Users
+
+The old multi-script workflow maps to the 2.0 CLI like this:
+
+| cryoROLE 0.x command | cryoROLE 2.0 command |
+|---|---|
+| `orientation_analysis` | `cryorole run` |
+| `landscape_projection` | `cryorole visualize` |
+| `point_select` | `cryorole select` |
+| `particle_backtrack` | `cryorole export` |
+
+See [Migration from cryoROLE 0.x](docs/migration_from_0x.md) for details.
+
+## License
+
+cryoROLE is distributed under the BSD 3-Clause License.
