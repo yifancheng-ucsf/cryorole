@@ -1,7 +1,6 @@
 # cryoROLE 2.0 Quick Start
 
-This guide shows the smallest practical cryoROLE 2.0 workflow. For the stable
-artifact and policy contract, see `docs/architecture.md`.
+This guide shows the smallest practical cryoROLE 2.0 workflow.
 
 ## Install
 
@@ -25,6 +24,8 @@ cryorole run --ref ref_domain.star --mov mov_domain.star
 By default, the run bundle is written under `cryorole_outputs/`. The run bundle
 contains raw numeric arrays, CSV tables, reports, manifests, and default
 quick-look visualizations.
+Commands write provenance into the run bundle so selections and exports can be
+audited later.
 
 Canonicalize the raw landscape:
 
@@ -48,6 +49,9 @@ cryorole select \
   -c 13 0 14 \
   -r 6
 ```
+
+The center values are usually chosen after inspecting the raw or canonical
+visualizations.
 
 Export the selected source metadata:
 
@@ -99,7 +103,9 @@ cryorole run --ref aligned_ref.star --mov aligned_mov.star --row-aligned
 In row-aligned mode, cryoROLE pairs row `N` with row `N` and requires equal row
 counts.
 
-If default matching is not safe, prepare aligned metadata first:
+If default matching is not safe, prepare aligned metadata first. `cryorole align`
+can use safe automatic STAR identity keys, or explicit keys with
+`cryorole align --key ...` when the automatic keys are not enough:
 
 ```bash
 cryorole align --ref ref_domain.star --mov mov_domain.star

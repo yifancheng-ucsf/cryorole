@@ -30,7 +30,8 @@ cryorole run --ref ref_domain.cs --mov mov_domain.cs
 ```
 
 If matching reorders rows or drops unmatched particles, cryoROLE records that in
-the run reports and manifest.
+the run reports and manifest. Downstream selections and exports use the recorded
+source-row provenance from the run bundle.
 
 ## Row-Aligned Inputs
 
@@ -77,6 +78,9 @@ cryorole select \
   -c 13 0 14 \
   -r 6
 ```
+
+The center values are usually chosen after inspecting the raw or canonical
+visualizations.
 
 Export:
 
