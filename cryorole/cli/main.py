@@ -210,7 +210,11 @@ def _add_run_parser(subparsers) -> None:
     parser.add_argument("--random-seed", type=int, default=0, help=_HIDDEN_HELP)
     parser.add_argument("--write-projection-csvs", action="store_true", help=_HIDDEN_HELP)
     _add_visualization_style_arguments(parser, help_text=_HIDDEN_HELP)
-    parser.add_argument("--output-dir", default="cryorole_outputs", help=_HIDDEN_HELP)
+    parser.add_argument(
+        "--output-dir",
+        default="cryorole_outputs",
+        help="Run bundle output directory. Default: cryorole_outputs.",
+    )
     parser.add_argument("--manifest-output", help=_HIDDEN_HELP)
     parser.add_argument("--overwrite", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument("--no-visualize", action="store_true", help="Skip raw quick-look visualization.")

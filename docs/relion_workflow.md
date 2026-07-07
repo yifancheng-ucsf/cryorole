@@ -45,6 +45,9 @@ The default run bundle is written under:
 cryorole_outputs/
 ```
 
+To choose a different run bundle, add `--output-dir RUN_DIR` to `cryorole run`
+and use that same directory with downstream `--run-dir` commands.
+
 Important outputs include:
 
 ```text

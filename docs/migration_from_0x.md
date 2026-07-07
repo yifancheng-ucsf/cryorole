@@ -28,6 +28,7 @@ cryorole run --ref ref.star --mov mov.star
 
 cryoROLE 2.0 records input normalization, identity matching, relative
 orientation, SLD density, reports, and manifests in a run bundle.
+The default bundle is `cryorole_outputs/`; use `--output-dir RUN_DIR` to name it.
 
 ## RND and SLD
 

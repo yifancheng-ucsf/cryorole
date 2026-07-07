@@ -1,7 +1,9 @@
 # cryoROLE Output Files
 
 cryoROLE 2.0 writes a run bundle: one directory that contains numeric arrays,
-flat tables, reports, visualizations, selections, exports, and provenance.
+flat tables, reports, visualizations, selections, exports, and provenance. The
+default run bundle is `cryorole_outputs/`; `cryorole run --output-dir RUN_DIR`
+writes the same layout under `RUN_DIR/`.
 
 ## Run Bundle Overview
 

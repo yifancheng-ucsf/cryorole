@@ -107,7 +107,7 @@ Each command writes provenance into the run bundle so selections and exports can
 
 ## Quick start
 
-The examples below use the default run directory, `cryorole_outputs/`, and assume no custom run directory was requested.
+The examples below use the default run directory, `cryorole_outputs/`, and assume no custom run directory was requested. To choose a different run bundle name, add `--output-dir RUN_DIR` to `cryorole run`, then pass that same directory to downstream commands with `--run-dir RUN_DIR`.
 
 ### RELION STAR inputs
 
@@ -192,7 +192,7 @@ Use `cryorole COMMAND --help` for the exact current options.
 
 ```bash
 cryorole align --ref REF.star --mov MOV.star
-cryorole run --ref REF_METADATA --mov MOV_METADATA
+cryorole run --ref REF_METADATA --mov MOV_METADATA [--output-dir RUN_DIR]
 cryorole canonicalize --run-dir cryorole_outputs
 cryorole visualize --run-dir cryorole_outputs --space canonical
 cryorole select --run-dir cryorole_outputs --selection-id state_1 --space canonical -c A B C -r DEG
@@ -217,6 +217,8 @@ cryorole_outputs/
   selections/
   exports/
 ```
+
+If `cryorole run --output-dir my_run` is used, the same layout is written under `my_run/` instead.
 
 Important user-facing artifacts include:
 

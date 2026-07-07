@@ -91,6 +91,7 @@ def test_run_help_shows_compact_public_surface(capsys) -> None:
         "--mov",
         "--ref-domain",
         "--mov-domain",
+        "--output-dir",
         "--row-aligned",
         "--no-visualize",
     ):

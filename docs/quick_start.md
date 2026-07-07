@@ -78,9 +78,14 @@ Default `.cs` matching uses `uid`.
 
 ## Choosing a Run Directory
 
-The compact public `run` command writes to the default run bundle location
-`cryorole_outputs/`. Downstream commands use that directory through
-`--run-dir`.
+By default, `cryorole run` writes to `cryorole_outputs/`. To choose a different
+run bundle name, use `--output-dir`:
+
+```bash
+cryorole run --ref ref_domain.star --mov mov_domain.star --output-dir my_run
+```
+
+Downstream commands then use that directory through `--run-dir my_run`.
 
 If you have multiple runs, keep each run bundle in a separate directory and use
 the matching `--run-dir` for canonicalization, visualization, selection, and
