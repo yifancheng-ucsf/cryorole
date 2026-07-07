@@ -18,9 +18,45 @@ scipy
 
 Test dependencies are available through the optional `test` extra.
 
-## Standard User Install from GitHub
+## Recommended Conda + GitHub Install
 
-Clone the repository and install from the repository root:
+We recommend installing cryoROLE in a dedicated conda environment, then
+installing the package from a GitHub checkout:
+
+```bash
+git clone https://github.com/yifancheng-ucsf/cryorole.git
+cd cryorole
+
+conda create -n cryorole python=3.10 -y
+conda activate cryorole
+
+python -m pip install .
+cryorole --help
+```
+
+This installs the `cryorole` command-line entry point.
+
+## Environment File Install
+
+The repository also provides `environment.yml`, which creates an editable conda
+environment from the repository root:
+
+```bash
+git clone https://github.com/yifancheng-ucsf/cryorole.git
+cd cryorole
+
+conda env create -f environment.yml
+conda activate cryorole
+cryorole --help
+```
+
+The environment file installs the package in editable mode so that local source
+changes are immediately visible.
+
+## Standard Pip Install from GitHub
+
+If you already have a suitable Python environment, you can install directly from
+the repository root:
 
 ```bash
 git clone https://github.com/yifancheng-ucsf/cryorole.git
@@ -28,8 +64,6 @@ cd cryorole
 python -m pip install .
 cryorole --help
 ```
-
-This installs the `cryorole` command-line entry point.
 
 ## Editable Developer Install
 
@@ -49,19 +83,6 @@ On macOS/Linux, use forward slashes in the test paths:
 ```bash
 python -m pytest tests/core tests/normalize tests/match tests/io -q
 ```
-
-## Conda Environment
-
-If you prefer conda, create the environment from the repository root:
-
-```bash
-conda env create -f environment.yml
-conda activate cryorole
-cryorole --help
-```
-
-The environment file installs the package in editable mode so that local source
-changes are immediately visible.
 
 ## Verification
 
@@ -84,15 +105,4 @@ The current package version is `2.0.0a1`. Public documentation may describe this
 as a 2.0 beta-preview workflow, but the package metadata remains alpha until a
 formal beta package is cut.
 
-Installation has been checked in the staging workspace with:
 
-```bash
-python -m pip install . --dry-run
-python -m pip install -e . --dry-run
-python -m pip install -e ".[test]" --dry-run
-```
-
-These checks validate package metadata and dependency resolution in the current
-environment. They cannot guarantee every future machine, Python distribution, or
-operating-system configuration, so installation should still be tested after the
-clean files are copied into the real GitHub repository.

@@ -65,8 +65,9 @@ Without `--row-aligned`, cryoROLE uses auditable identity matching:
 - RELION STAR: `_rlnTomoParticleName`, then `_rlnImageName` / `rlnImageName`
   when safe
 
-If safe default matching is not possible, use `cryorole align` or manually
-prepare aligned metadata before `cryorole run --row-aligned`.
+If safe default matching is not possible, use `cryorole align --key ...` to
+prepare row-aligned metadata with an explicit key, or manually prepare aligned
+metadata before `cryorole run --row-aligned`.
 
 ## Selection
 
@@ -86,6 +87,8 @@ cryorole select \
 
 This avoids treating Euler coordinates as a simple Euclidean space for the
 default scientific radius selection.
+The center values are usually chosen after inspecting the raw or canonical
+visualizations.
 
 ## Backtracking and Export
 

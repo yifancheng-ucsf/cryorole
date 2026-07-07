@@ -29,7 +29,9 @@ _rlnImageName / rlnImageName
 
 If matching reorders rows or drops unmatched particles, cryoROLE records that in
 the run reports and manifest. If matching cannot be resolved safely, prepare
-aligned inputs before running.
+aligned inputs before running. Use `cryorole align --key ...` when the default
+STAR identity keys are not sufficient and you need to provide an explicit
+matching key.
 
 ## Standard Run
 
@@ -47,6 +49,7 @@ Important outputs include:
 
 ```text
 cryorole_outputs/run_manifest.json
+cryorole_outputs/run_summary.json
 cryorole_outputs/data/raw_landscape.npz
 cryorole_outputs/data/raw_landscape.csv
 cryorole_outputs/data/match_table.csv
@@ -72,7 +75,8 @@ index, and records the row-aligned policy.
 ## Preparing Aligned STAR Files
 
 When default matching is not enough, use `cryorole align` to prepare aligned
-STAR files:
+STAR files. The command can use safe automatic identity keys, or explicit keys
+with `--key` when the automatic STAR keys are not enough:
 
 ```bash
 cryorole align --ref ref_domain.star --mov mov_domain.star
@@ -126,6 +130,8 @@ cryorole select \
 
 The default radius selection uses SO(3) geodesic distance when the center is
 provided in Euler degrees.
+The center values are usually chosen after inspecting the raw or canonical
+visualizations.
 
 ## Export
 

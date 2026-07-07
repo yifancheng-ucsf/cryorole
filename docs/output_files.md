@@ -34,7 +34,8 @@ audit downstream analysis.
 
 `run_summary.json`
 
-Provides a concise human-readable summary of the run.
+Provides a concise human-readable summary of the run, including inputs,
+matching, resolved policies, and important output paths.
 
 ## Data Directory
 
@@ -128,6 +129,15 @@ rewrite source poses with display/canonical coordinates.
   truth.
 - CSV: user-facing flat tables.
 - JSON: reports, summaries, manifests, policies, and provenance.
+
+## Derived Coordinate Conventions
+
+Rotation matrices are the internal source of truth. Rotation vectors,
+quaternions, and Euler angles are derived representations.
+
+Public RO/RV-derived Euler output uses extrinsic fixed-axis ZYX. CSV column names
+may use compact labels such as `raw_ea_zyx_alpha_deg`; the reports and manifests
+record the resolved Euler convention.
 
 ## SLD Fields
 
