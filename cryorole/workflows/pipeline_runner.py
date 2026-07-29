@@ -224,12 +224,14 @@ class PipelineRunner:
         phase2: Phase2ROResult,
         *,
         density_policy: DensityPolicy | None = None,
+        density_query_batch_size: int = 100_000,
     ) -> Phase3DensityResult:
         """Compute density from RO-derived analysis coordinates only."""
 
         landscape = compute_landscape_density(
             phase2.ro_result,
             policy=density_policy,
+            query_batch_size=density_query_batch_size,
         )
         return Phase3DensityResult(phase2=phase2, landscape=landscape)
 

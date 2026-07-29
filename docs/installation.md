@@ -105,4 +105,15 @@ The current package version is `2.0.0a1`. Public documentation may describe this
 as a 2.0 beta-preview workflow, but the package metadata remains alpha until a
 formal beta package is cut.
 
+Installation has been checked in the staging workspace with:
 
+```bash
+python -m pip install . --dry-run
+python -m pip install -e . --dry-run
+python -m pip install -e ".[test]" --dry-run
+```
+
+These checks validate package metadata and dependency resolution in the current
+environment. They cannot guarantee every future machine, Python distribution, or
+operating-system configuration, so installation should still be tested after the
+clean files are copied into the real GitHub repository.

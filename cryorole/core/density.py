@@ -10,11 +10,18 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation
 
 from cryorole.models.density_report import DensityReport
 from cryorole.models.landscape import Landscape
 from cryorole.models.policies import DensityPolicy
 from cryorole.models.ro_result import ROResult
+
+
+SLD_METRICS = ("rotvec_euclidean", "so3_geodesic")
+DEFAULT_SLD_METRIC = "rotvec_euclidean"
+DEFAULT_DENSITY_QUERY_BATCH_SIZE = 100_000
+_MAX_KNN_QUERY_ELEMENTS = 2_000_000
 
 
 def _require_ro_result(ro_result: ROResult) -> None:
@@ -40,6 +47,11 @@ def _analysis_coordinates_from_ro(
 def _validate_density_policy(policy: DensityPolicy) -> None:
     if policy.density_metric != "sld":
         raise ValueError("cryoROLE 2.0 density_metric must be 'sld'")
+    if policy.sld_metric not in SLD_METRICS:
+        raise ValueError(
+            f"Unsupported SLD metric: {policy.sld_metric!r}; "
+            f"expected one of {SLD_METRICS}"
+        )
     if policy.k_neighbors < 1:
         raise ValueError("k_neighbors must be at least 1")
     if policy.distance_floor_mode != "relative_to_global_local_k_mean":
@@ -86,24 +98,39 @@ def compute_sld_values(
     *,
     k_neighbors: int,
     distance_floor_fraction: float,
+    sld_metric: str = DEFAULT_SLD_METRIC,
+    query_batch_size: int = DEFAULT_DENSITY_QUERY_BATCH_SIZE,
 ) -> dict[str, np.ndarray | float]:
     """Compute SLD values and floor diagnostics in analysis space."""
 
     coords = np.asarray(coordinates_analysis, dtype=float)
     if coords.ndim != 2 or coords.shape[1] != 3:
         raise ValueError(f"coordinates_analysis must have shape (n, 3), got {coords.shape}")
+    if not np.isfinite(coords).all():
+        raise ValueError("coordinates_analysis contains non-finite values")
     n_points = len(coords)
     if n_points == 0:
         raise ValueError("coordinates_analysis must contain at least one point")
     if n_points == 1:
         raise ValueError("SLD requires at least two analysis coordinates")
+    if k_neighbors < 1:
+        raise ValueError("k_neighbors must be at least 1")
+    if distance_floor_fraction < 0:
+        raise ValueError("distance_floor_fraction must be non-negative")
+    if sld_metric not in SLD_METRICS:
+        raise ValueError(f"Unsupported SLD metric: {sld_metric!r}; expected one of {SLD_METRICS}")
+    if query_batch_size < 1:
+        raise ValueError("query_batch_size must be at least 1")
 
     k = min(k_neighbors, n_points - 1)
-
-    tree = cKDTree(coords)
-    distances, _ = tree.query(coords, k=k + 1)
-    neighbor_distances = distances[:, 1:]
-    local_k_mean = np.mean(neighbor_distances, axis=1)
+    if sld_metric == "rotvec_euclidean":
+        local_k_mean = _rotvec_euclidean_local_k_mean(coords, k=k)
+    else:
+        local_k_mean = _so3_geodesic_local_k_mean(
+            coords,
+            k=k,
+            query_batch_size=query_batch_size,
+        )
     global_local_k_mean = float(np.mean(local_k_mean))
     if np.isclose(global_local_k_mean, 0.0):
         raise ValueError(
@@ -128,6 +155,102 @@ def compute_sld_values(
         "sld_raw": sld_raw,
         "sld_was_floored": local_k_mean < distance_floor,
     }
+
+
+def _rotvec_euclidean_local_k_mean(coords: np.ndarray, *, k: int) -> np.ndarray:
+    """Preserve the original RV-Euclidean kNN implementation."""
+
+    tree = cKDTree(coords)
+    distances, _ = tree.query(coords, k=k + 1)
+    neighbor_distances = distances[:, 1:]
+    return np.mean(neighbor_distances, axis=1)
+
+
+def _so3_geodesic_local_k_mean(
+    rotvecs: np.ndarray,
+    *,
+    k: int,
+    query_batch_size: int,
+) -> np.ndarray:
+    """Return exact SO(3) local kNN means using a quaternion cKDTree index."""
+
+    quaternions = Rotation.from_rotvec(rotvecs).as_quat()
+    norms = np.linalg.norm(quaternions, axis=1, keepdims=True)
+    if not np.isfinite(norms).all() or np.any(norms == 0.0):
+        raise ValueError("SO(3) SLD produced invalid unit quaternions")
+    quaternions = quaternions / norms
+
+    n_points = len(quaternions)
+    physical_indices = np.arange(n_points, dtype=np.int64)
+    tree_to_physical = np.concatenate((physical_indices, physical_indices))
+    tree = cKDTree(np.concatenate((quaternions, -quaternions), axis=0))
+
+    max_candidate_count = 2 * (k + 1)
+    memory_bounded_batch_size = max(
+        1,
+        _MAX_KNN_QUERY_ELEMENTS // max_candidate_count,
+    )
+    batch_size = min(query_batch_size, memory_bounded_batch_size)
+    local_k_mean = np.empty(n_points, dtype=float)
+
+    for start in range(0, n_points, batch_size):
+        stop = min(start + batch_size, n_points)
+        query_particle_indices = np.arange(start, stop, dtype=np.int64)
+        selected_neighbors = np.full((stop - start, k), -1, dtype=np.int64)
+        unresolved_rows = np.arange(stop - start, dtype=np.int64)
+        candidate_count = min(max_candidate_count, k + 1)
+
+        while unresolved_rows.size:
+            unresolved_particles = query_particle_indices[unresolved_rows]
+            _, tree_indices = tree.query(
+                quaternions[unresolved_particles],
+                k=candidate_count,
+            )
+            tree_indices = np.asarray(tree_indices, dtype=np.int64)
+            if tree_indices.ndim == 1:
+                tree_indices = tree_indices.reshape(1, -1)
+
+            still_unresolved: list[int] = []
+            for unresolved_position, row_index in enumerate(unresolved_rows):
+                particle_index = int(query_particle_indices[row_index])
+                seen: set[int] = set()
+                neighbors: list[int] = []
+                for tree_index in tree_indices[unresolved_position]:
+                    neighbor_index = int(tree_to_physical[tree_index])
+                    if neighbor_index == particle_index or neighbor_index in seen:
+                        continue
+                    seen.add(neighbor_index)
+                    neighbors.append(neighbor_index)
+                    if len(neighbors) == k:
+                        break
+                if len(neighbors) == k:
+                    selected_neighbors[row_index] = neighbors
+                else:
+                    still_unresolved.append(int(row_index))
+
+            if not still_unresolved:
+                break
+            if candidate_count == max_candidate_count:
+                raise RuntimeError(
+                    "SO(3) kNN query could not resolve the requested number of "
+                    "unique physical particle neighbors"
+                )
+            unresolved_rows = np.asarray(still_unresolved, dtype=np.int64)
+            candidate_count = min(
+                max_candidate_count,
+                max(candidate_count + 1, candidate_count * 2),
+            )
+
+        neighbor_quaternions = quaternions[selected_neighbors]
+        dots = np.einsum(
+            "bi,bki->bk",
+            quaternions[query_particle_indices],
+            neighbor_quaternions,
+        )
+        geodesic_distances = 2.0 * np.arccos(np.clip(np.abs(dots), 0.0, 1.0))
+        local_k_mean[start:stop] = np.mean(geodesic_distances, axis=1)
+
+    return local_k_mean
 
 
 def normalize_sld_for_display(
@@ -286,6 +409,8 @@ def _build_density_report(
     global_local_k_mean: float,
     distance_floor: float,
     distance_floor_fraction: float,
+    requested_sld_metric: str,
+    resolved_sld_metric: str,
     display_diagnostics: dict[str, np.ndarray | float | int | str | None],
     near_identity_ro_tolerance_rad: float,
     near_duplicate_coordinate_tolerance_rad: float,
@@ -347,6 +472,8 @@ def _build_density_report(
         max_over_p99_raw=_ratio(max_sld_raw, p99_sld_raw),
         floored_particle_keys=tuple(floored["particle_key"].tolist()),
         floored_rows=tuple(floored_rows),
+        requested_sld_metric=requested_sld_metric,
+        resolved_sld_metric=resolved_sld_metric,
         sld_display_mode=str(display_diagnostics["sld_display_mode"]),
         p99_5_sld_raw=p99_5_sld_raw,
         sld_display_outlier_mode=str(display_diagnostics["sld_display_outlier_mode"]),
@@ -436,6 +563,7 @@ def compute_landscape_density(
     ro_result: ROResult,
     *,
     policy: DensityPolicy | None = None,
+    query_batch_size: int = DEFAULT_DENSITY_QUERY_BATCH_SIZE,
 ) -> Landscape:
     """Compute a density-bearing landscape from RO-derived analysis coordinates."""
 
@@ -451,6 +579,8 @@ def compute_landscape_density(
         coords,
         k_neighbors=policy.k_neighbors,
         distance_floor_fraction=policy.distance_floor_fraction,
+        sld_metric=policy.sld_metric,
+        query_batch_size=query_batch_size,
     )
     display = compute_sld_display_values(
         sld["sld_raw"],
@@ -484,6 +614,8 @@ def compute_landscape_density(
         global_local_k_mean=float(sld["global_local_k_mean"]),
         distance_floor=float(sld["sld_distance_floor"]),
         distance_floor_fraction=policy.distance_floor_fraction,
+        requested_sld_metric=policy.sld_metric,
+        resolved_sld_metric=policy.sld_metric,
         display_diagnostics=display,
         near_identity_ro_tolerance_rad=policy.near_identity_ro_tolerance_rad,
         near_duplicate_coordinate_tolerance_rad=policy.near_duplicate_coordinate_tolerance_rad,

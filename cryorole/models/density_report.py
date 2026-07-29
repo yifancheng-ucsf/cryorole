@@ -28,6 +28,8 @@ class DensityReport:
     max_over_p99_raw: float
     floored_particle_keys: tuple[Any, ...]
     floored_rows: tuple[Mapping[str, Any], ...]
+    requested_sld_metric: str = "rotvec_euclidean"
+    resolved_sld_metric: str = "rotvec_euclidean"
     p99_5_sld_raw: float = 0.0
     sld_display_mode: str = "identity"
     sld_display_outlier_mode: str = "tail_jump"

@@ -6,7 +6,7 @@ import argparse
 import ctypes
 import csv
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime
 from datetime import timezone
 import os
@@ -21,7 +21,11 @@ import pandas as pd
 from scipy.spatial.transform import Rotation
 
 from cryorole.cli.progress import ProgressReporter
-from cryorole.core.density import compute_sld_display_values, compute_sld_values
+from cryorole.core.density import (
+    SLD_METRICS,
+    compute_sld_display_values,
+    compute_sld_values,
+)
 from cryorole.core.euler_conventions import (
     CANONICAL_EULER_ANGLE_COLUMNS,
     DEFAULT_EULER_CONVENTION,
@@ -84,6 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_align_parser(subparsers)
     _add_run_parser(subparsers)
     _add_visualize_parser(subparsers)
+    _add_animate_parser(subparsers)
+    _add_canonical_views_parser(subparsers)
     _add_canonicalize_parser(subparsers)
     _add_select_parser(subparsers)
     _add_export_parser(subparsers)
@@ -100,7 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return args.handler(args)
     except NotImplementedError as exc:
         parser.exit(2, f"cryorole: {exc}\n")
-    except (ValueError, FileExistsError, IsADirectoryError) as exc:
+    except (ValueError, FileExistsError, IsADirectoryError, RuntimeError) as exc:
         parser.exit(2, f"cryorole: error: {exc}\n")
     return 0
 
@@ -155,6 +161,15 @@ def _add_run_parser(subparsers) -> None:
         "--row-aligned",
         action="store_true",
         help="Assert that ref and mov row N refer to the same particle.",
+    )
+    parser.add_argument(
+        "--sld-metric",
+        choices=SLD_METRICS,
+        default="rotvec_euclidean",
+        help=(
+            "SLD kNN distance metric. Default: rotvec_euclidean; "
+            "so3_geodesic is explicit opt-in."
+        ),
     )
     parser.add_argument(
         "--run-backend",
@@ -315,6 +330,153 @@ def _add_visualize_parser(subparsers) -> None:
     parser.add_argument("--ylim", type=_parse_float_pair_bound, help="1D y-axis limit as MIN:MAX.")
     parser.add_argument("--overwrite", action="store_true")
     parser.set_defaults(handler=visualize_command)
+
+
+def _add_animate_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "animate",
+        help="Export Phase 1-4 trajectory, rendered frames, composites, and optional MP4.",
+    )
+    parser.add_argument("--run-dir", required=True, help="Existing cryoROLE run bundle.")
+    parser.add_argument(
+        "--coordinate-set",
+        choices=("raw", "canonical"),
+        default="raw",
+        help="Waypoint and landscape coordinate set. Default: raw.",
+    )
+    parser.add_argument("--canonical-id", default="default")
+    parser.add_argument("--path-csv", required=True, help="EA or RV waypoint CSV.")
+    parser.add_argument("--path-space", choices=("ea", "rv"), required=True)
+    parser.add_argument("--chimerax-session", required=True, help="Preconfigured .cxs session.")
+    parser.add_argument(
+        "--secondary-chimerax-session",
+        help="Optional second .cxs with the same model transforms and a different view.",
+    )
+    parser.add_argument("--reference-model-id", required=True)
+    parser.add_argument("--moving-model-id", required=True)
+    parser.add_argument(
+        "--pivot",
+        nargs=3,
+        type=float,
+        required=True,
+        metavar=("X", "Y", "Z"),
+        help="Rotation pivot in ChimeraX scene coordinates.",
+    )
+    parser.add_argument(
+        "--baseline-ro",
+        required=True,
+        help="Saved moving-model RO assertion: identity, first-waypoint, ea:A,B,G, or rv:X,Y,Z.",
+    )
+    parser.add_argument(
+        "--map-frame",
+        choices=("raw", "canonical", "explicit"),
+        required=True,
+    )
+    parser.add_argument("--map-frame-transform")
+    parser.add_argument(
+        "--euler-convention",
+        choices=("auto",) + EULER_CONVENTIONS,
+        default="auto",
+    )
+    parser.add_argument("--frames-per-segment", type=_positive_int_argument, default=30)
+    parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--hold-frames", type=int, default=0)
+    parser.add_argument("--reverse", action="store_true")
+    parser.add_argument("--ping-pong", action="store_true")
+    display_filter = parser.add_mutually_exclusive_group()
+    display_filter.add_argument(
+        "--threshold",
+        "--sld-threshold",
+        dest="threshold",
+        type=float,
+        help="Display rows with sld_display >= threshold; --sld-threshold is an alias.",
+    )
+    display_filter.add_argument("--top-fraction", type=float)
+    parser.add_argument("--colormap", default="rainbow_r")
+    parser.add_argument("--vmin", type=float)
+    parser.add_argument("--vmax", type=float)
+    parser.add_argument(
+        "--range",
+        dest="range_bound",
+        action="append",
+        default=None,
+        type=_parse_range_bound,
+        metavar="AXIS:LOWER:UPPER",
+    )
+    parser.add_argument("--point-size", type=float, default=1.0)
+    parser.add_argument("--landscape-alpha", type=float, default=1.0)
+    parser.add_argument("--trail-frames", type=int, default=0)
+    parser.add_argument("--show-current-values", action="store_true")
+    parser.add_argument("--axis-limits", help="JSON file defining all three panel limits.")
+    parser.add_argument(
+        "--render-mode",
+        choices=("script-only", "execute"),
+        default="script-only",
+    )
+    parser.add_argument("--chimerax-bin")
+    parser.add_argument("--canvas-width", type=_positive_int_argument, default=1800)
+    parser.add_argument("--canvas-height", type=_positive_int_argument, default=600)
+    parser.add_argument("--structure-width", type=_positive_int_argument, default=900)
+    parser.add_argument("--structure-height", type=_positive_int_argument, default=900)
+    parser.add_argument(
+        "--dual-structure-horizontal-crop",
+        type=float,
+        default=0.0,
+        metavar="FRACTION",
+        help=(
+            "Crop this fraction from both horizontal sides of each dual-view "
+            "structure frame. Requires stacked dual view; default: 0."
+        ),
+    )
+    parser.add_argument("--composite-width", type=_positive_int_argument, default=1920)
+    parser.add_argument("--composite-height", type=_positive_int_argument, default=1080)
+    parser.add_argument(
+        "--layout",
+        choices=("stacked", "side_by_side"),
+        default="stacked",
+        help="Composite layout. Default: stacked.",
+    )
+    parser.add_argument("--background-color", default="#ffffff")
+    parser.add_argument(
+        "--no-encode",
+        action="store_true",
+        help="Write validated composite PNGs without encoding MP4.",
+    )
+    parser.add_argument("--ffmpeg-bin")
+    parser.add_argument("--ffprobe-bin")
+    parser.add_argument("--crf", type=int, default=18)
+    parser.add_argument("--movie-name", default="animation.mp4")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.set_defaults(handler=animate_command)
+
+
+def _add_canonical_views_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "canonical-views",
+        help="Export camera-only ChimeraX views along the canonical axes.",
+    )
+    parser.add_argument("--run-dir", required=True, help="Existing cryoROLE run bundle.")
+    parser.add_argument("--canonical-id", default="default")
+    parser.add_argument("--chimerax-session", required=True, help="Preconfigured .cxs session.")
+    parser.add_argument(
+        "--map-frame",
+        choices=("raw", "explicit"),
+        required=True,
+        help="Scene basis of the input session.",
+    )
+    parser.add_argument("--map-frame-transform")
+    parser.add_argument(
+        "--render-mode",
+        choices=("script-only", "execute"),
+        default="script-only",
+    )
+    parser.add_argument("--chimerax-bin")
+    parser.add_argument("--width", type=_positive_int_argument, default=900)
+    parser.add_argument("--height", type=_positive_int_argument, default=900)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.set_defaults(handler=canonical_views_command)
 
 
 def _add_canonicalize_parser(subparsers) -> None:
@@ -649,6 +811,7 @@ def run_command(args, *, runner: PipelineRunner | None = None) -> int:
     convention_policy_mov = _convention_policy_for_source(source_mov)
     match_policy = MatchPolicy()
     density_policy = DensityPolicy(
+        sld_metric=args.sld_metric,
         k_neighbors=args.k_neighbors,
         display_outlier_mode=getattr(args, "sld_display_outlier_mode", "tail_jump"),
         tail_search_fraction=getattr(args, "sld_tail_search_fraction", 0.01),
@@ -729,7 +892,10 @@ def run_command(args, *, runner: PipelineRunner | None = None) -> int:
     reporter.sample_memory("ro_computed")
     with reporter.timed_stage(
         "compute_sld",
-        label=f"computing SLD with k={density_policy.k_neighbors}",
+        label=(
+            f"computing SLD with k={density_policy.k_neighbors}, "
+            f"metric={density_policy.sld_metric}"
+        ),
         stage_number=4,
         stage_total=8,
         density_query_batch_size=args.density_query_batch_size,
@@ -737,6 +903,7 @@ def run_command(args, *, runner: PipelineRunner | None = None) -> int:
         phase3 = runner.compute_density_for_ro_result(
             phase2,
             density_policy=density_policy,
+            density_query_batch_size=args.density_query_batch_size,
         )
     if phase3.landscape.density_report is not None:
         for warning in phase3.landscape.density_report.warnings:
@@ -1118,7 +1285,7 @@ def _write_selection_outputs(
             output_dir=output_dir / "selected_landscape",
             overwrite=args.overwrite,
             recompute_sld=bool(args.recompute_sld),
-            density_policy=DensityPolicy(),
+            density_policy=_density_policy_from_parent_run(args, landscape),
             coordinate_space=args.space,
             parent_landscape_metadata=landscape_metadata,
             euler_metadata=euler_metadata,
@@ -1511,23 +1678,31 @@ def visualize_command(args) -> int:
     kde_bandwidth = _parse_kde_bandwidth(args.kde_bandwidth)
     formats = _parse_formats(args.formats)
     _validate_visualize_color_field_args(args)
-    landscape_source = args.run_dir
-    output_dir = _visualization_output_dir(args)
-    euler_metadata = _resolve_landscape_euler_metadata(
-        args,
-        columns=RAW_EULER_ANGLE_COLUMNS,
-    )
-    selection_metadata = None
-    source_landscape_path = resolve_landscape_path(
-        landscape_source,
-        space=args.space,
-        canonical_id=args.canonical_id,
-    )
+    selected_landscape_report = None
+    selected_landscape_path = None
     if getattr(args, "use_selected_landscape", False):
         selected_landscape_path = _resolve_selected_landscape_path(
             Path(args.run_dir),
             args.selection_id,
         )
+        selected_landscape_report = _read_selected_landscape_report(
+            Path(args.run_dir),
+            args.selection_id,
+        )
+    effective_space = _effective_visualization_space(
+        args,
+        selected_landscape_report=selected_landscape_report,
+    )
+    effective_args = SimpleNamespace(**vars(args))
+    effective_args.space = effective_space
+    landscape_source = args.run_dir
+    output_dir = _visualization_output_dir(effective_args)
+    euler_metadata = _resolve_visualization_euler_metadata(
+        effective_args,
+        selected_landscape_report=selected_landscape_report,
+    )
+    selection_metadata = None
+    if getattr(args, "use_selected_landscape", False):
         landscape = read_landscape(selected_landscape_path)
         source_landscape_path = selected_landscape_path
         selection_metadata = _selected_landscape_visualization_metadata(
@@ -1535,15 +1710,21 @@ def visualize_command(args) -> int:
             args.selection_id,
             selected_landscape_path,
             selected_count=len(landscape.data),
+            report=selected_landscape_report,
         )
     else:
+        source_landscape_path = resolve_landscape_path(
+            landscape_source,
+            space=effective_args.space,
+            canonical_id=effective_args.canonical_id,
+        )
         landscape = read_landscape(
             landscape_source,
-            space=args.space,
-            canonical_id=args.canonical_id,
+            space=effective_args.space,
+            canonical_id=effective_args.canonical_id,
         )
     if args.selection_id and not getattr(args, "use_selected_landscape", False):
-        landscape, selection_metadata = _filter_landscape_by_selection(args, landscape)
+        landscape, selection_metadata = _filter_landscape_by_selection(effective_args, landscape)
     _validate_visualize_color_field(landscape, "sld_display")
     range_bounds = dict(args.range_bound or ())
     axis_limits = _visualize_axis_limits_from_ranges(range_bounds)
@@ -1551,7 +1732,7 @@ def visualize_command(args) -> int:
         landscape,
         output_dir,
         overwrite=args.overwrite,
-        coordinate_source=_coordinate_source_for_landscape(args),
+        coordinate_source=_coordinate_source_for_landscape(effective_args),
         representation=args.representation,
         color_field="sld_display",
         euler_convention=str(euler_metadata["euler_convention"]),
@@ -1594,7 +1775,7 @@ def visualize_command(args) -> int:
     )
     report = _visualization_public_report(
         report,
-        args=args,
+        args=effective_args,
         source_landscape_path=source_landscape_path,
         euler_metadata=euler_metadata,
         formats=formats,
@@ -1606,6 +1787,26 @@ def visualize_command(args) -> int:
         overwrite=True,
     )
     print(str(Path(output_dir)))
+    return 0
+
+
+def animate_command(args) -> int:
+    """Create an offline Phase 1-4 animation bundle."""
+
+    from cryorole.animation.workflow import run_animation
+
+    result = run_animation(args)
+    print(result.output_dir)
+    return 0
+
+
+def canonical_views_command(args) -> int:
+    """Export camera-only canonical-axis views from a saved ChimeraX session."""
+
+    from cryorole.animation.canonical_views import run_canonical_views
+
+    result = run_canonical_views(args)
+    print(result.output_dir)
     return 0
 
 
@@ -2749,6 +2950,7 @@ def _write_selected_derived_landscape(
             coordinates,
             k_neighbors=density_policy.k_neighbors,
             distance_floor_fraction=density_policy.distance_floor_fraction,
+            sld_metric=density_policy.sld_metric,
         )
         display = compute_sld_display_values(
             sld["sld_raw"],
@@ -2773,10 +2975,13 @@ def _write_selected_derived_landscape(
             if key != "sld_display" and key != "sld_display_is_outlier"
         }
 
+    selected_active_policies = dict(parent_landscape.active_policies or {})
+    if recompute_sld:
+        selected_active_policies["density_policy"] = density_policy
     selected_landscape = Landscape(
         data=selected_data,
         canonical_transform=parent_landscape.canonical_transform,
-        active_policies=dict(parent_landscape.active_policies or {}),
+        active_policies=selected_active_policies,
         density_report=None,
         canonicalization_report=parent_landscape.canonicalization_report,
     )
@@ -2811,6 +3016,8 @@ def _write_selected_derived_landscape(
         "coordinate_space": coordinate_space,
         "density_source": density_source,
         "sld_recomputed": recompute_sld,
+        "requested_sld_metric": density_policy.sld_metric if recompute_sld else None,
+        "resolved_sld_metric": density_policy.sld_metric if recompute_sld else None,
         "requested_k_neighbors": density_policy.k_neighbors if recompute_sld else None,
         "effective_k_neighbors": effective_k,
         "distance_floor_fraction": (
@@ -3016,9 +3223,10 @@ def _selected_landscape_visualization_metadata(
     selected_landscape_path: Path,
     *,
     selected_count: int,
+    report: dict[str, object] | None = None,
 ) -> dict[str, object]:
     report_path = run_dir / "selections" / selection_id / "selected_landscape" / "landscape_report.json"
-    report = _read_json_if_exists(report_path) or {}
+    report = report if report is not None else (_read_json_if_exists(report_path) or {})
     output_paths = report.get("output_paths") if isinstance(report, dict) else None
     return {
         "selection_id": selection_id,
@@ -3030,12 +3238,20 @@ def _selected_landscape_visualization_metadata(
         "selected_landscape_report_path": str(report_path) if report_path.exists() else None,
         "selected_landscape_parent_path": report.get("parent_landscape_path"),
         "parent_landscape_path": report.get("parent_landscape_path"),
+        "selected_landscape_coordinate_space": report.get("coordinate_space"),
+        "coordinate_space": report.get("coordinate_space"),
         "selected_landscape_density_source": report.get("density_source"),
         "density_source": report.get("density_source"),
         "selected_landscape_sld_recomputed": report.get("sld_recomputed"),
         "sld_recomputed": report.get("sld_recomputed"),
         "selected_landscape_output_paths": output_paths if isinstance(output_paths, dict) else None,
     }
+
+
+def _read_selected_landscape_report(run_dir: Path, selection_id: str) -> dict[str, object] | None:
+    return _read_json_if_exists(
+        run_dir / "selections" / selection_id / "selected_landscape" / "landscape_report.json"
+    )
 
 
 def _filter_landscape_by_selection(args, landscape: Landscape) -> tuple[Landscape, dict[str, object]]:
@@ -3206,6 +3422,44 @@ def _coordinate_source_for_landscape(args) -> str:
     return args.coordinate_source
 
 
+def _effective_visualization_space(
+    args,
+    *,
+    selected_landscape_report: dict[str, object] | None,
+) -> str:
+    if getattr(args, "use_selected_landscape", False) and selected_landscape_report:
+        coordinate_space = selected_landscape_report.get("coordinate_space")
+        if coordinate_space in {"raw", "canonical"}:
+            return str(coordinate_space)
+    return getattr(args, "space", "raw")
+
+
+def _resolve_visualization_euler_metadata(
+    args,
+    *,
+    selected_landscape_report: dict[str, object] | None,
+) -> dict[str, object]:
+    report_metadata = (
+        selected_landscape_report.get("euler_metadata")
+        if isinstance(selected_landscape_report, dict)
+        else None
+    )
+    if isinstance(report_metadata, dict):
+        convention = report_metadata.get("euler_convention")
+        sequence = report_metadata.get("scipy_euler_sequence")
+        if convention or sequence:
+            resolved = resolve_euler_convention(
+                convention if isinstance(convention, str) else None,
+                scipy_euler_sequence=sequence if isinstance(sequence, str) else None,
+                source="inherited",
+            )
+            return resolved.metadata(euler_angle_columns=RAW_EULER_ANGLE_COLUMNS)
+    return _resolve_landscape_euler_metadata(
+        args,
+        columns=RAW_EULER_ANGLE_COLUMNS,
+    )
+
+
 def _resolve_run_euler_metadata(args) -> dict[str, object]:
     source = "cli_override" if args.euler_convention else "cli_default"
     resolved = resolve_euler_convention(args.euler_convention, source=source)
@@ -3282,6 +3536,46 @@ def _read_json_if_exists(path: Path) -> dict[str, object] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def _density_policy_from_parent_run(args, landscape: Landscape) -> DensityPolicy:
+    active_density_policy = (landscape.active_policies or {}).get("density_policy")
+    if isinstance(active_density_policy, DensityPolicy):
+        return active_density_policy
+    if isinstance(active_density_policy, dict):
+        return _density_policy_from_mapping(active_density_policy)
+
+    run_dir_raw = getattr(args, "run_dir", None)
+    if run_dir_raw:
+        run_dir = Path(run_dir_raw)
+        manifest = _read_json_if_exists(run_dir / "run_manifest.json") or {}
+        active_policies = manifest.get("active_policies")
+        if isinstance(active_policies, dict):
+            manifest_density_policy = active_policies.get("density_policy")
+            if isinstance(manifest_density_policy, dict):
+                return _density_policy_from_mapping(manifest_density_policy)
+
+        summary = _read_json_if_exists(run_dir / "run_summary.json") or {}
+        resolved_metric = summary.get("resolved_sld_metric")
+        if isinstance(resolved_metric, str):
+            values: dict[str, object] = {"sld_metric": resolved_metric}
+            k_neighbors = summary.get("k_neighbors")
+            if isinstance(k_neighbors, int):
+                values["k_neighbors"] = k_neighbors
+            return _density_policy_from_mapping(values)
+
+    return DensityPolicy()
+
+
+def _density_policy_from_mapping(values: dict[str, object]) -> DensityPolicy:
+    allowed_fields = {field.name for field in fields(DensityPolicy)}
+    return DensityPolicy(
+        **{
+            key: value
+            for key, value in values.items()
+            if key in allowed_fields
+        }
+    )
 
 
 def _identity_policy_from_args(args, *, source_type: str | None = None) -> IdentityPolicy | None:
@@ -3370,6 +3664,8 @@ def _run_summary_payload(
         "match_warnings": list(_get_field(phase1.match_report, "warnings", ())),
         "landscape_row_count": len(landscape.data),
         "k_neighbors": k_neighbors,
+        "requested_sld_metric": args.sld_metric,
+        "resolved_sld_metric": args.sld_metric,
         "canonicalization_performed": canonicalization_performed,
         "selection_performed": False,
         "run_backend_requested": args.run_backend,

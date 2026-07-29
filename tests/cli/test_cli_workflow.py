@@ -59,8 +59,21 @@ class FakeRunner:
         self.calls.append(("compute_ro_for_phase1_result", phase1, kwargs))
         return "phase2"
 
-    def compute_density_for_ro_result(self, phase2, *, density_policy=None):
-        self.calls.append(("compute_density_for_ro_result", phase2, density_policy))
+    def compute_density_for_ro_result(
+        self,
+        phase2,
+        *,
+        density_policy=None,
+        density_query_batch_size=None,
+    ):
+        self.calls.append(
+            (
+                "compute_density_for_ro_result",
+                phase2,
+                density_policy,
+                density_query_batch_size,
+            )
+        )
         return SimpleNamespace(landscape=_make_landscape())
 
     def canonicalize_density_result(self, phase3, *, canonicalization_policy=None):
@@ -74,8 +87,21 @@ class FakeRunner:
 
 
 class HighSldRunner(FakeRunner):
-    def compute_density_for_ro_result(self, phase2, *, density_policy=None):
-        self.calls.append(("compute_density_for_ro_result", phase2, density_policy))
+    def compute_density_for_ro_result(
+        self,
+        phase2,
+        *,
+        density_policy=None,
+        density_query_batch_size=None,
+    ):
+        self.calls.append(
+            (
+                "compute_density_for_ro_result",
+                phase2,
+                density_policy,
+                density_query_batch_size,
+            )
+        )
         return SimpleNamespace(landscape=_make_landscape(sld_values=[1.0, 20.0, 150.0]))
 
 
@@ -93,6 +119,7 @@ def test_run_help_shows_compact_public_surface(capsys) -> None:
         "--mov-domain",
         "--output-dir",
         "--row-aligned",
+        "--sld-metric",
         "--no-visualize",
     ):
         assert public_option in help_text
@@ -107,6 +134,73 @@ def test_run_help_shows_compact_public_surface(capsys) -> None:
         "--write-debug-json",
     ):
         assert hidden_option not in help_text
+
+
+def test_run_sld_metric_defaults_and_choices() -> None:
+    parser = build_parser()
+
+    default_args = parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs"])
+    explicit_args = parser.parse_args(
+        [
+            "run",
+            "--ref",
+            "ref.cs",
+            "--mov",
+            "mov.cs",
+            "--sld-metric",
+            "so3_geodesic",
+        ]
+    )
+
+    assert default_args.sld_metric == "rotvec_euclidean"
+    assert explicit_args.sld_metric == "so3_geodesic"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "run",
+                "--ref",
+                "ref.cs",
+                "--mov",
+                "mov.cs",
+                "--sld-metric",
+                "unknown",
+            ]
+        )
+
+
+def test_run_so3_metric_is_passed_and_recorded_as_opt_in(tmp_path) -> None:
+    output_dir = tmp_path / "run"
+    runner = FakeRunner()
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--ref",
+            "ref.cs",
+            "--mov",
+            "mov.cs",
+            "--output-dir",
+            str(output_dir),
+            "--sld-metric",
+            "so3_geodesic",
+            "--density-query-batch-size",
+            "17",
+            "--no-visualize",
+        ]
+    )
+
+    run_command(args, runner=runner)
+
+    density_call = next(
+        call for call in runner.calls if call[0] == "compute_density_for_ro_result"
+    )
+    assert density_call[2].sld_metric == "so3_geodesic"
+    assert density_call[3] == 17
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert summary["requested_sld_metric"] == "so3_geodesic"
+    assert summary["resolved_sld_metric"] == "so3_geodesic"
+    assert manifest["active_policies"]["density_policy"]["sld_metric"] == "so3_geodesic"
 
 
 def test_run_cli_rejects_removed_percentile_sld_display_arguments() -> None:
@@ -484,6 +578,13 @@ def test_run_manifest_records_resolved_cryosparc_uid_and_core_policies(tmp_path)
     assert active_policies["convention_policy_mov"] is None
     assert active_policies["match_policy"]["join_type"] == "inner"
     assert active_policies["density_policy"]["k_neighbors"] == 50
+    assert active_policies["density_policy"]["sld_metric"] == "rotvec_euclidean"
+    assert manifest["reports"]["density_report"]["requested_sld_metric"] == (
+        "rotvec_euclidean"
+    )
+    assert manifest["reports"]["density_report"]["resolved_sld_metric"] == (
+        "rotvec_euclidean"
+    )
     assert active_policies["representation_policy"]["euler_convention"] == "extrinsic_zyx"
     assert active_policies["representation_policy"]["scipy_euler_sequence"] == "zyx"
     assert "canonicalization_policy" not in active_policies
@@ -526,6 +627,8 @@ def test_run_summary_contains_counts_and_canonicalization_status(tmp_path) -> No
     assert summary["match_warnings"] == []
     assert summary["landscape_row_count"] == 3
     assert summary["k_neighbors"] == 7
+    assert summary["requested_sld_metric"] == "rotvec_euclidean"
+    assert summary["resolved_sld_metric"] == "rotvec_euclidean"
     assert summary["canonicalization_performed"] is False
     assert summary["selection_performed"] is False
     assert summary["output_artifacts"]["raw_landscape_npz"] == str(
@@ -1580,6 +1683,74 @@ def test_visualize_can_use_selected_derived_landscape(tmp_path) -> None:
     assert selected_landscape_path.name == "landscape.npz"
     assert selected_landscape_path.parent.name == "selected_landscape"
     assert report["n_points_input"] == len(display)
+
+
+def test_visualize_selected_derived_landscape_inherits_canonical_space(tmp_path) -> None:
+    run_dir = _make_select_run_bundle(tmp_path)
+    canonical_landscape = _make_canonical_landscape()
+    canonical_landscape.data["coordinates_canonical"] = [
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 2.0]),
+        np.array([0.0, 0.0, 3.0]),
+    ]
+    canonical_dir = run_dir / "canonical" / "default"
+    canonical_dir.mkdir(parents=True)
+    write_landscape_npz(
+        canonical_landscape,
+        canonical_dir / "canonical_landscape.npz",
+        artifact_type="canonical_landscape",
+    )
+    (canonical_dir / "canonicalize_summary.json").write_text(
+        json.dumps(
+            {
+                "euler_convention": "extrinsic_zyx",
+                "scipy_euler_sequence": "zyx",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    select_command(
+        parser.parse_args(
+            [
+                "select",
+                "--run-dir",
+                str(run_dir),
+                "--selection-id",
+                "canonical-subset",
+                "--space",
+                "canonical",
+                "--mode",
+                "threshold",
+                "--sld-min",
+                "0.0",
+                "--write-selected-landscape",
+            ]
+        )
+    )
+
+    visualize_command(
+        parser.parse_args(
+            [
+                "visualize",
+                "--run-dir",
+                str(run_dir),
+                "--selection-id",
+                "canonical-subset",
+                "--use-selected-landscape",
+                "--formats",
+                "png",
+            ]
+        )
+    )
+
+    output_dir = run_dir / "visualizations" / "selections" / "canonical-subset" / "selected_landscape" / "default"
+    report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
+    display = pd.read_csv(output_dir / "display_table.csv")
+    assert report["space"] == "canonical"
+    assert report["selected_landscape_coordinate_space"] == "canonical"
+    assert set(display["coordinate_source"]) == {"canonical"}
+    assert display["rotvec_z"].max() == 3.0
 
 
 def test_visualize_selection_id_falls_back_to_selection_json(tmp_path) -> None:
@@ -3529,6 +3700,56 @@ def test_select_recomputed_selected_landscape_preserves_parent_sld(tmp_path) -> 
     assert "parent_sld_display_is_outlier" in selected.data.columns
     assert "parent_sld_raw" in csv_table.columns
     assert not np.allclose(selected.data["sld_raw"], selected.data["parent_sld_raw"])
+
+
+def test_select_recomputed_sld_inherits_parent_so3_metric(tmp_path) -> None:
+    landscape = _make_landscape()
+    run_dir = _make_select_run_bundle(tmp_path, landscape)
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "active_policies": {
+                    "density_policy": {
+                        "sld_metric": "so3_geodesic",
+                        "k_neighbors": 50,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "select",
+            "--run-dir",
+            str(run_dir),
+            "--selection-id",
+            "selection",
+            "--mode",
+            "random",
+            "--fraction",
+            "0.67",
+            "--seed",
+            "7",
+            "--write-selected-landscape",
+            "--recompute-sld",
+        ]
+    )
+
+    select_command(args)
+
+    report = json.loads(
+        (
+            run_dir
+            / "selections"
+            / "selection"
+            / "selected_landscape"
+            / "landscape_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["requested_sld_metric"] == "so3_geodesic"
+    assert report["resolved_sld_metric"] == "so3_geodesic"
 
 
 def test_select_range_by_coordinates_with_euler_alpha_bounds(tmp_path) -> None:

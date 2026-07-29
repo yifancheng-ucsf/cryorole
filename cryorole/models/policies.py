@@ -99,6 +99,7 @@ class DensityPolicy:
     """Controls analysis-space density computation and display normalization."""
 
     density_metric: str = "sld"
+    sld_metric: str = "rotvec_euclidean"
     coordinate_source: str = "rotvec_ro"
     k_neighbors: int = 50
     distance_floor_mode: str = "relative_to_global_local_k_mean"
@@ -138,6 +139,34 @@ class CanonicalizationPolicy:
     sign_ambiguity_threshold: float = 1e-8
     handedness_rule: str = "right_handed"
     origin_policy: str = "preserve"
+
+
+@dataclass(frozen=True)
+class AnimationPolicy:
+    """Controls non-destructive Phase 1-4 offline animation export."""
+
+    coordinate_set: str = "raw"
+    path_space: str = "rv"
+    euler_convention: str = "auto"
+    interpolation: str = "so3_quaternion_slerp"
+    frames_per_segment: int = 30
+    fps: float = 30.0
+    hold_frames: int = 0
+    reverse: bool = False
+    ping_pong: bool = False
+    sld_field: str = "sld_display"
+    map_frame: str = "raw"
+    matrix_vector_convention: str = "column"
+    quaternion_storage_order: str = "wxyz"
+    quaternion_internal_order: str = "xyzw"
+    render_mode: str = "script-only"
+    composite_width: int = 1920
+    composite_height: int = 1080
+    composite_layout: str = "stacked"
+    composite_background_color: str = "#ffffff"
+    encode_movie: bool = True
+    crf: int = 18
+    movie_name: str = "animation.mp4"
 
 
 @dataclass(frozen=True)

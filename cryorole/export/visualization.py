@@ -11,6 +11,15 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation
 
+from cryorole.core.display_policy import (
+    EULER_AXIS_NAMES,
+    EULER_PROJECTIONS,
+    LEGACY_DISPLAY_STYLE,
+    coordinate_range_mask,
+    resolve_color_scale as resolve_shared_color_scale,
+    resolve_display_indices,
+    sort_display_indices,
+)
 from cryorole.core.euler_conventions import RAW_EULER_ANGLE_COLUMNS, resolve_euler_convention
 from cryorole.export.landscape import write_json_artifact
 from cryorole.models.landscape import Landscape
@@ -22,12 +31,6 @@ ROT_VECTOR_PROJECTIONS = (
     ("xz", 0, 2),
 )
 ROT_VECTOR_AXIS_NAMES = ("x", "y", "z")
-EULER_PROJECTIONS = (
-    ("alpha_beta", 0, 1),
-    ("beta_gamma", 1, 2),
-    ("alpha_gamma", 0, 2),
-)
-EULER_AXIS_NAMES = ("alpha", "beta", "gamma")
 SLD_FIELDS = (
     "sld_unfloored",
     "sld_raw",
@@ -54,24 +57,7 @@ STYLE_PRESETS: dict[str, dict[str, Any]] = {
             "gamma": (-180.0, 180.0),
         },
     },
-    "legacy": {
-        "color_map": "rainbow_r",
-        "point_size": 1.0,
-        "point_alpha": 1.0,
-        "figure_size_2d": (20.0, 9.0),
-        "figure_size_3d": (8.0, 7.0),
-        "colorbar_position": "bottom",
-        "aspect": "equal",
-        "sort_points_by_color": "ascending",
-        "axis_limits": {
-            "alpha": (-180.0, 180.0),
-            "beta": (-180.0, 180.0),
-            "gamma": (-180.0, 180.0),
-            "x": (-3.14, 3.14),
-            "y": (-3.14, 3.14),
-            "z": (-3.14, 3.14),
-        },
-    },
+    "legacy": LEGACY_DISPLAY_STYLE,
     "paper": {
         "color_map": "viridis",
         "point_size": 3.0,
@@ -715,28 +701,20 @@ def _resolve_color_scale(
     color_vmax: float | None,
     display_threshold: float | None,
 ) -> tuple[float | None, float | None, str, str]:
-    resolved_vmin = color_vmin
-    resolved_vmax = color_vmax
-    vmin_source = "explicit" if color_vmin is not None else "auto"
-    vmax_source = "explicit" if color_vmax is not None else "auto"
-    finite_values = np.asarray(values, dtype=float)
-    finite_values = finite_values[np.isfinite(finite_values)]
-    scale_values = finite_values
-    if display_outlier_mask is not None and display_outlier_mask.shape == np.asarray(values).shape:
-        raw_values = np.asarray(values, dtype=float)
-        scale_mask = np.isfinite(raw_values) & ~display_outlier_mask
-        scale_values = raw_values[scale_mask]
-        if scale_values.size and display_outlier_mask.any() and resolved_vmax is None:
-            resolved_vmax = float(np.max(scale_values))
-            vmax_source = "tail_jump_display_outliers"
-    if visual_style == "legacy" and resolved_vmin is None and display_threshold is not None:
-        resolved_vmin = display_threshold
-        vmin_source = "legacy_display_threshold"
-    if visual_style == "legacy" and resolved_vmax is None:
-        if scale_values.size:
-            resolved_vmax = math.ceil(float(scale_values.max()) * 10.0) / 10.0
-            vmax_source = "legacy_color_max_ceiling"
-    return resolved_vmin, resolved_vmax, vmin_source, vmax_source
+    resolved = resolve_shared_color_scale(
+        values,
+        display_outlier_mask=display_outlier_mask,
+        visual_style=visual_style,
+        color_vmin=color_vmin,
+        color_vmax=color_vmax,
+        display_threshold=display_threshold,
+    )
+    return (
+        resolved.vmin,
+        resolved.vmax,
+        resolved.vmin_source,
+        resolved.vmax_source,
+    )
 
 
 def _resolve_display_filter(
@@ -861,16 +839,11 @@ def _display_indices(
     display_density_field: str,
     range_bounds: Mapping[str, tuple[float | None, float | None] | None],
 ) -> np.ndarray:
-    mask = np.ones(len(data), dtype=bool)
-    if display_sld_threshold is not None:
-        mask &= np.asarray(data[display_density_field], dtype=float) >= display_sld_threshold
-    selected = np.where(mask)[0]
-    if display_top_fraction is not None and selected.size:
-        n_keep = max(1, int(math.ceil(selected.size * display_top_fraction)))
-        values = np.asarray(data.iloc[selected][display_density_field], dtype=float)
-        order = np.argsort(values, kind="mergesort")
-        selected = selected[order[-n_keep:]]
-        selected = np.sort(selected)
+    selected = resolve_display_indices(
+        np.asarray(data[display_density_field], dtype=float),
+        threshold=display_sld_threshold,
+        top_fraction=display_top_fraction,
+    )
     if range_bounds and selected.size:
         range_mask = np.ones(selected.size, dtype=bool)
         if "euler" in representations:
@@ -898,25 +871,12 @@ def _range_mask(
     range_bounds: Mapping[str, tuple[float | None, float | None] | None],
     wraparound: bool,
 ) -> np.ndarray:
-    mask = np.ones(coordinates.shape[0], dtype=bool)
-    for axis_index, axis_name in enumerate(axis_names):
-        bounds = range_bounds.get(axis_name)
-        if bounds is None:
-            continue
-        lower, upper = bounds
-        if lower is None and upper is None:
-            continue
-        values = coordinates[:, axis_index]
-        axis_mask = np.ones(coordinates.shape[0], dtype=bool)
-        if lower is not None and upper is not None and wraparound and lower > upper:
-            axis_mask &= (values >= lower) | (values <= upper)
-        else:
-            if lower is not None:
-                axis_mask &= values >= lower
-            if upper is not None:
-                axis_mask &= values <= upper
-        mask &= axis_mask
-    return mask
+    return coordinate_range_mask(
+        coordinates,
+        axis_names=axis_names,
+        range_bounds=range_bounds,
+        wraparound=wraparound,
+    )
 
 
 def _display_table(
@@ -1424,13 +1384,11 @@ def _plot_indices(
     color_field: str,
     sort_points_by_color: str,
 ) -> np.ndarray:
-    if sort_points_by_color == "none" or indices.size == 0:
-        return indices
-    values = np.asarray(data.iloc[indices][color_field], dtype=float)
-    order = np.argsort(values, kind="mergesort")
-    if sort_points_by_color == "descending":
-        order = order[::-1]
-    return indices[order]
+    return sort_display_indices(
+        indices,
+        np.asarray(data[color_field], dtype=float),
+        order=sort_points_by_color,
+    )
 
 
 def _downsample_indices(n_points: int, max_points: int | None, random_seed: int) -> np.ndarray:

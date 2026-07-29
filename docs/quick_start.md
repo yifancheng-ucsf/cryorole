@@ -1,6 +1,7 @@
 # cryoROLE 2.0 Quick Start
 
-This guide shows the smallest practical cryoROLE 2.0 workflow.
+This guide shows the smallest practical cryoROLE 2.0 workflow. For the stable
+artifact and policy contract, see `docs/architecture.md`.
 
 ## Install
 
@@ -136,6 +137,45 @@ auditable.
 Display filtering, such as plotting only high-density points, is not a
 scientific selection. Use `cryorole select` when you intend to create a particle
 set for export or reconstruction.
+
+## Offline Animation Export
+
+Prepare a ChimeraX session with stable reference and moving model IDs, then
+write at least two RV waypoints:
+
+```csv
+label,rv_x_rad,rv_y_rad,rv_z_rad
+start,0,0,0
+end,0,0,0.5
+```
+
+Generate the Phase 1–4 script-only bundle without launching ChimeraX:
+
+```bash
+cryorole animate \
+  --run-dir cryorole_outputs \
+  --coordinate-set raw \
+  --path-csv waypoints.csv \
+  --path-space rv \
+  --chimerax-session prepared_scene.cxs \
+  --reference-model-id "#1" \
+  --moving-model-id "#2" \
+  --pivot 0 0 0 \
+  --baseline-ro identity \
+  --map-frame raw \
+  --output-dir animation_output
+```
+
+The bundle contains `trajectory.csv`, landscape frames, a per-frame transform
+artifact, generated ChimeraX scripts, logs, and a manifest. Add
+`--render-mode execute --chimerax-bin PATH --no-encode` for validated
+structure and composite frames. For MP4, also provide
+`--ffmpeg-bin PATH --ffprobe-bin PATH`.
+Animation `--threshold`, `--top-fraction`, `--colormap`, `--vmin`, `--vmax`,
+and `--range` use the same display-only policy as `cryorole visualize`. Linux
+execute mode uses ChimeraX offscreen rendering and requires its completion
+status artifact as well as valid PNG frames. MP4 output is validated as H.264,
+`yuv420p`, fixed-size constant-fps video; source frames are retained.
 
 ## Complete Workflow Template
 

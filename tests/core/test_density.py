@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.spatial.transform import Rotation
 
 from cryorole.core import (
     compute_landscape_density,
@@ -30,6 +31,15 @@ def _ro_result_from_rotvecs(rotvecs: list[np.ndarray]) -> ROResult:
     )
 
 
+def _brute_force_so3_local_k_mean(rotvecs: np.ndarray, k_neighbors: int) -> np.ndarray:
+    quaternions = Rotation.from_rotvec(rotvecs).as_quat()
+    dots = np.clip(np.abs(quaternions @ quaternions.T), 0.0, 1.0)
+    distances = 2.0 * np.arccos(dots)
+    np.fill_diagonal(distances, np.inf)
+    k = min(k_neighbors, len(rotvecs) - 1)
+    return np.mean(np.sort(distances, axis=1)[:, :k], axis=1)
+
+
 def test_sld_formula_on_small_synthetic_point_set() -> None:
     coords = np.array(
         [
@@ -51,6 +61,169 @@ def test_sld_formula_on_small_synthetic_point_set() -> None:
     assert result["global_local_k_mean"] == expected_global
     np.testing.assert_allclose(result["sld_unfloored"], expected_global / expected_local)
     np.testing.assert_allclose(result["sld_raw"], expected_global / expected_local)
+
+
+def test_default_sld_metric_matches_explicit_rotvec_euclidean() -> None:
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.2, 0.1, 0.0],
+            [-0.3, 0.0, 0.1],
+            [0.0, 0.4, -0.2],
+        ]
+    )
+
+    implicit = compute_sld_values(
+        coords,
+        k_neighbors=2,
+        distance_floor_fraction=1e-4,
+    )
+    explicit = compute_sld_values(
+        coords,
+        k_neighbors=2,
+        distance_floor_fraction=1e-4,
+        sld_metric="rotvec_euclidean",
+    )
+
+    for field in (
+        "sld_local_k_mean",
+        "global_local_k_mean",
+        "sld_distance_floor",
+        "sld_effective_local_k_mean",
+        "sld_unfloored",
+        "sld_raw",
+        "sld_was_floored",
+    ):
+        np.testing.assert_array_equal(implicit[field], explicit[field])
+
+
+def test_so3_sld_matches_brute_force_reference_with_small_batches() -> None:
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.3, -0.1, 0.2],
+            [-0.4, 0.2, 0.1],
+            [0.1, 0.5, -0.2],
+            [-0.2, -0.1, 0.6],
+        ]
+    )
+
+    result = compute_sld_values(
+        coords,
+        k_neighbors=3,
+        distance_floor_fraction=1e-4,
+        sld_metric="so3_geodesic",
+        query_batch_size=2,
+    )
+    expected_local = _brute_force_so3_local_k_mean(coords, 3)
+    expected_global = float(np.mean(expected_local))
+
+    np.testing.assert_allclose(result["sld_local_k_mean"], expected_local, atol=1e-14)
+    assert result["global_local_k_mean"] == pytest.approx(expected_global)
+    np.testing.assert_allclose(result["sld_raw"], expected_global / expected_local)
+
+
+def test_so3_sld_handles_quaternion_double_cover_and_rotvec_pi_boundary() -> None:
+    epsilon = 1e-6
+    exact_double_cover = np.array(
+        [
+            [np.pi, 0.0, 0.0],
+            [-np.pi, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+    )
+    coords = np.array(
+        [
+            [np.pi - epsilon, 0.0, 0.0],
+            [-np.pi + epsilon, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+    )
+
+    exact_result = compute_sld_values(
+        exact_double_cover,
+        k_neighbors=1,
+        distance_floor_fraction=1e-4,
+        sld_metric="so3_geodesic",
+        query_batch_size=1,
+    )
+    result = compute_sld_values(
+        coords,
+        k_neighbors=1,
+        distance_floor_fraction=1e-4,
+        sld_metric="so3_geodesic",
+        query_batch_size=1,
+    )
+
+    np.testing.assert_allclose(exact_result["sld_local_k_mean"][:2], 0.0, atol=1e-15)
+    assert result["sld_local_k_mean"][0] == pytest.approx(2.0 * epsilon, abs=1e-10)
+    assert result["sld_local_k_mean"][1] == pytest.approx(2.0 * epsilon, abs=1e-10)
+
+
+def test_so3_sld_keeps_distinct_particles_with_identical_rotations() -> None:
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.4, 0.0, 0.0],
+        ]
+    )
+
+    result = compute_sld_values(
+        coords,
+        k_neighbors=1,
+        distance_floor_fraction=1e-4,
+        sld_metric="so3_geodesic",
+        query_batch_size=1,
+    )
+
+    np.testing.assert_allclose(result["sld_local_k_mean"][:2], 0.0, atol=1e-15)
+    assert np.isinf(result["sld_unfloored"][0])
+    assert np.isinf(result["sld_unfloored"][1])
+    assert np.isfinite(result["sld_raw"]).all()
+
+
+def test_so3_sld_supports_k_equal_to_n_minus_one() -> None:
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.0, 0.3, 0.0],
+            [0.0, 0.0, 0.4],
+        ]
+    )
+
+    result = compute_sld_values(
+        coords,
+        k_neighbors=99,
+        distance_floor_fraction=1e-4,
+        sld_metric="so3_geodesic",
+        query_batch_size=2,
+    )
+
+    np.testing.assert_allclose(
+        result["sld_local_k_mean"],
+        _brute_force_so3_local_k_mean(coords, len(coords) - 1),
+    )
+
+
+def test_compute_sld_values_rejects_unknown_metric_and_nonfinite_coordinates() -> None:
+    coords = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0]])
+
+    with pytest.raises(ValueError, match="Unsupported SLD metric"):
+        compute_sld_values(
+            coords,
+            k_neighbors=1,
+            distance_floor_fraction=1e-4,
+            sld_metric="unknown",
+        )
+    with pytest.raises(ValueError, match="non-finite"):
+        compute_sld_values(
+            np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]]),
+            k_neighbors=1,
+            distance_floor_fraction=1e-4,
+            sld_metric="so3_geodesic",
+        )
 
 
 def test_relative_floor_behavior_and_unfloored_retention() -> None:
@@ -311,6 +484,27 @@ def test_density_report_distinguishes_requested_and_effective_k() -> None:
     assert landscape.density_report is not None
     assert landscape.density_report.requested_k_neighbors == 50
     assert landscape.density_report.effective_k_neighbors == 2
+
+
+def test_density_report_records_requested_and_resolved_so3_metric() -> None:
+    ro_result = _ro_result_from_rotvecs(
+        [
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.3, 0.0, 0.0]),
+            np.array([0.0, 0.4, 0.0]),
+        ]
+    )
+
+    landscape = compute_landscape_density(
+        ro_result,
+        policy=DensityPolicy(k_neighbors=1, sld_metric="so3_geodesic"),
+        query_batch_size=1,
+    )
+
+    assert landscape.density_report is not None
+    assert landscape.density_report.requested_sld_metric == "so3_geodesic"
+    assert landscape.density_report.resolved_sld_metric == "so3_geodesic"
+    assert landscape.active_policies["density_policy"].sld_metric == "so3_geodesic"
 
 
 def _valid_landscape_data() -> pd.DataFrame:

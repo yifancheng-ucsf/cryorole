@@ -150,6 +150,21 @@ cryorole run --ref ref_domain.cs --mov mov_domain.cs
 cryorole visualize --run-dir cryorole_outputs --space raw
 ```
 
+### Inspect a landscape interactively in ChimeraX
+
+The standalone `cryorole_chimerax_viewer.py` script registers display-only
+ChimeraX commands for cryoROLE landscape CSV files. Load it once in ChimeraX,
+then open a raw, canonical, or visualization `display_table.csv`:
+
+```text
+open /path/to/cryorole_chimerax_viewer.py
+cryorole open /path/to/display_table.csv
+```
+
+The viewer can switch between Euler and rotation-vector coordinates, color by
+SLD, and apply threshold or top-fraction display filters. It does not perform
+RO analysis, create scientific selections, or modify source metadata.
+
 ### Canonicalize the landscape
 
 Canonicalization is optional. It re-expresses the landscape in a motion-aligned coordinate frame so that the dominant motion is easier to view and compare. It does not change the raw RO facts.
@@ -158,6 +173,56 @@ Canonicalization is optional. It re-expresses the landscape in a motion-aligned 
 cryorole canonicalize --run-dir cryorole_outputs
 cryorole visualize --run-dir cryorole_outputs --space canonical
 ```
+
+### Test a moving-domain rotation
+
+The standalone diagnostic script applies one extrinsic fixed-axis ZYX rotation
+to every RO by right multiplication and inherits the parent SLD values:
+
+```bash
+python scripts/rotate_landscape.py \
+  --input cryorole_outputs \
+  --space raw \
+  --rotation-euler 20 10 0 \
+  --output-dir rotated_landscape
+
+cryorole visualize --run-dir rotated_landscape --space raw
+```
+
+Use `--space canonical --canonical-id ID` to define the input rotation in an
+existing canonical frame. The script writes a derived landscape bundle only;
+it does not modify or export source STAR/CS poses. SLD is inherited rather than
+recomputed so the same particles keep the same visualization colors.
+
+### Export an offline animation bundle
+
+`cryorole animate` implements SO(3) trajectory generation, synchronized
+landscape PNG frames, and ChimeraX script export. The default `script-only`
+mode does not require ChimeraX:
+
+```bash
+cryorole animate \
+  --run-dir cryorole_outputs \
+  --coordinate-set raw \
+  --path-csv waypoints.csv \
+  --path-space rv \
+  --chimerax-session prepared_scene.cxs \
+  --reference-model-id "#1" \
+  --moving-model-id "#2" \
+  --pivot 0 0 0 \
+  --baseline-ro identity \
+  --map-frame raw \
+  --output-dir animation_output
+```
+
+Add `--render-mode execute --chimerax-bin PATH --no-encode` to request
+validated structure and composite frames. Omit `--no-encode` and provide
+`--ffmpeg-bin PATH --ffprobe-bin PATH` for validated H.264 MP4 output.
+Animation display filters and legacy style are shared with
+`cryorole visualize`; Linux execution uses ChimeraX offscreen mode and requires
+an explicit renderer-completion status plus valid frames. Composition preserves
+the full input frames and their aspect ratios; no frame set is automatically
+deleted. Animation filters are display-only and never create selections.
 
 ### Select particles
 
@@ -195,6 +260,7 @@ cryorole align --ref REF.star --mov MOV.star
 cryorole run --ref REF_METADATA --mov MOV_METADATA [--output-dir RUN_DIR]
 cryorole canonicalize --run-dir cryorole_outputs
 cryorole visualize --run-dir cryorole_outputs --space canonical
+cryorole animate --run-dir cryorole_outputs --path-csv PATH.csv --path-space rv --chimerax-session SCENE.cxs --reference-model-id "#1" --moving-model-id "#2" --pivot 0 0 0 --baseline-ro identity --map-frame raw --output-dir ANIMATION_DIR
 cryorole select --run-dir cryorole_outputs --selection-id state_1 --space canonical -c A B C -r DEG
 cryorole export --run-dir cryorole_outputs --selection-id state_1 --domain both
 ```
@@ -261,6 +327,9 @@ JSON files are used for reports, summaries, manifests, and provenance. Full obje
 - [CryoSPARC workflow](docs/cryosparc_workflow.md)
 - [Output files](docs/output_files.md)
 - [Migration from cryoROLE 0.x](docs/migration_from_0x.md)
+- [Architecture contract](docs/architecture.md)
+- [Animation export](docs/animation_export.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Notes for cryoROLE 0.x users
 
