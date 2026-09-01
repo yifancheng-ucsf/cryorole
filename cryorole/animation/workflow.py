@@ -23,6 +23,7 @@ from cryorole.animation.chimerax import (
     ChimeraXExecutionError,
     execute_chimerax,
     generate_chimerax_scripts,
+    normalize_model_id_groups,
     validate_chimerax_completion,
     validate_matching_session_baselines,
     validate_structure_frames,
@@ -33,6 +34,7 @@ from cryorole.animation.compositor import (
     compose_frame_sequences,
     resolve_composite_layout,
     validate_dual_structure_horizontal_crop,
+    validate_structure_crop_fraction,
 )
 from cryorole.animation.manifest import (
     ANIMATION_MANIFEST_SCHEMA_VERSION,
@@ -85,6 +87,15 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
         if getattr(args, "secondary_chimerax_session", None)
         else None
     )
+    tertiary_session = (
+        Path(args.tertiary_chimerax_session).resolve()
+        if getattr(args, "tertiary_chimerax_session", None)
+        else None
+    )
+    reference_model_ids, moving_model_ids = normalize_model_id_groups(
+        args.reference_model_id,
+        args.moving_model_id,
+    )
     if not run_dir.is_dir():
         raise ValueError(f"Run directory does not exist: {run_dir}")
     if not path_csv.is_file():
@@ -93,21 +104,43 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
         raise ValueError(f"ChimeraX session does not exist: {session}")
     if secondary_session is not None and not secondary_session.is_file():
         raise ValueError(f"Secondary ChimeraX session does not exist: {secondary_session}")
+    if tertiary_session is not None and secondary_session is None:
+        raise ValueError(
+            "--tertiary-chimerax-session requires --secondary-chimerax-session"
+        )
+    if tertiary_session is not None and not tertiary_session.is_file():
+        raise ValueError(f"Tertiary ChimeraX session does not exist: {tertiary_session}")
     if secondary_session is not None and args.layout != "stacked":
-        raise ValueError("dual structure view is supported only with --layout stacked")
-    dual_structure_horizontal_crop = validate_dual_structure_horizontal_crop(
-        getattr(args, "dual_structure_horizontal_crop", 0.0),
+        raise ValueError("multiple structure views require --layout stacked")
+    view_sessions = {"primary": session}
+    if secondary_session is not None:
+        view_sessions["secondary"] = secondary_session
+    if tertiary_session is not None:
+        view_sessions["tertiary"] = tertiary_session
+    multiple_views = len(view_sessions) > 1
+    structure_horizontal_crop = validate_dual_structure_horizontal_crop(
+        getattr(
+            args,
+            "structure_horizontal_crop",
+            getattr(args, "dual_structure_horizontal_crop", 0.0),
+        ),
         has_secondary=secondary_session is not None,
         layout_name=args.layout,
     )
-    structure_view_count = 2 if secondary_session is not None else 1
+    structure_vertical_crop = validate_structure_crop_fraction(
+        getattr(args, "structure_vertical_crop", 0.0),
+        axis_name="vertical",
+        has_multiple_views=multiple_views,
+        layout_name=args.layout,
+    )
+    structure_view_count = len(view_sessions)
     movie_name = _validated_movie_name(args.movie_name)
     output_dir = _prepare_output_directory(
         Path(args.output_dir),
         run_dir=run_dir,
         protected_paths=tuple(
             path
-            for path in (path_csv, session, secondary_session)
+            for path in (path_csv, *view_sessions.values())
             if path is not None
         ),
         overwrite=bool(args.overwrite),
@@ -130,9 +163,10 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                 if args.render_mode == "script-only"
                 else "pending"
             )
-            if secondary_session is not None
+            if multiple_views
             else "not_applicable_single_view"
-        )
+        ),
+        "view_count": structure_view_count,
     }
     composite_result = None
     ffmpeg_result = None
@@ -147,11 +181,11 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
         "encoder": "not_started",
         "movie_validation": "not_started",
     }
-    if secondary_session is not None:
+    if multiple_views:
         stage_statuses.update(
             {
-                "structure_render_primary": "not_started",
-                "structure_render_secondary": "not_started",
+                f"structure_render_{view_name}": "not_started"
+                for view_name in view_sessions
             }
         )
     manifest = _base_manifest(
@@ -160,6 +194,9 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
         path_csv,
         session,
         secondary_session=secondary_session,
+        tertiary_session=tertiary_session,
+        reference_model_ids=reference_model_ids,
+        moving_model_ids=moving_model_ids,
     )
     try:
         if args.render_mode == "execute" and not args.no_encode:
@@ -267,9 +304,15 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                 if secondary_session is not None
                 else None
             ),
+            tertiary_structure_dimensions=(
+                (args.structure_width, args.structure_height)
+                if tertiary_session is not None
+                else None
+            ),
             layout_name=args.layout,
             background_color=args.background_color,
-            dual_structure_horizontal_crop=dual_structure_horizontal_crop,
+            dual_structure_horizontal_crop=structure_horizontal_crop,
+            structure_vertical_crop=structure_vertical_crop,
         )
         landscape_destination = planned_layout.landscape_destination
         composite_scale = min(
@@ -303,14 +346,14 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
         stage_statuses["landscape"] = "complete"
 
         active_stage = "chimerax_scripts"
-        if secondary_session is None:
+        if not multiple_views:
             scripts_by_view = {
                 "primary": generate_chimerax_scripts(
                     output_dir=output_dir,
                     session_path=session,
                     transform_csv=transform_csv,
-                    reference_model_id=args.reference_model_id,
-                    moving_model_id=args.moving_model_id,
+                    reference_model_id=reference_model_ids,
+                    moving_model_id=moving_model_ids,
                     structure_width=args.structure_width,
                     structure_height=args.structure_height,
                 )
@@ -321,16 +364,13 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                     output_dir=output_dir,
                     session_path=view_session,
                     transform_csv=transform_csv,
-                    reference_model_id=args.reference_model_id,
-                    moving_model_id=args.moving_model_id,
+                    reference_model_id=reference_model_ids,
+                    moving_model_id=moving_model_ids,
                     structure_width=args.structure_width,
                     structure_height=args.structure_height,
                     view_name=view_name,
                 )
-                for view_name, view_session in (
-                    ("primary", session),
-                    ("secondary", secondary_session),
-                )
+                for view_name, view_session in view_sessions.items()
             }
         stage_statuses["chimerax_scripts"] = "complete"
         status = "scripts_ready"
@@ -340,12 +380,12 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
             for view_name, scripts in scripts_by_view.items():
                 active_stage = (
                     f"structure_render_{view_name}"
-                    if secondary_session is not None
+                    if multiple_views
                     else "structure_render"
                 )
                 render_log = output_dir / "logs" / (
                     f"chimerax_render_{view_name}.log"
-                    if secondary_session is not None
+                    if multiple_views
                     else "chimerax_render.log"
                 )
                 _log(log_path, "chimerax", f"Starting {view_name} ChimeraX subprocess")
@@ -360,10 +400,12 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                 completion_statuses[view_name] = validate_chimerax_completion(
                     scripts.status_path,
                     expected_count=len(frames),
+                    expected_reference_model_ids=reference_model_ids,
+                    expected_moving_model_ids=moving_model_ids,
                 )
                 structure_dir = (
                     output_dir / "frames" / "structure" / view_name
-                    if secondary_session is not None
+                    if multiple_views
                     else output_dir / "frames" / "structure"
                 )
                 structure_validations[view_name] = validate_structure_frames(
@@ -375,11 +417,12 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
             return_code = return_codes["primary"]
             completion_status = completion_statuses["primary"]
             structure_validation = structure_validations["primary"]
-            if secondary_session is not None:
+            if multiple_views:
                 try:
                     session_transform_parity = validate_matching_session_baselines(
                         completion_statuses["primary"],
                         completion_statuses["secondary"],
+                        completion_statuses.get("tertiary"),
                     )
                 except RuntimeError as exc:
                     session_transform_parity = {
@@ -396,7 +439,7 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                 landscape_dir=output_dir / "frames" / "landscape",
                 structure_dir=(
                     output_dir / "frames" / "structure" / "primary"
-                    if secondary_session is not None
+                    if multiple_views
                     else output_dir / "frames" / "structure"
                 ),
                 secondary_structure_dir=(
@@ -404,12 +447,18 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                     if secondary_session is not None
                     else None
                 ),
+                tertiary_structure_dir=(
+                    output_dir / "frames" / "structure" / "tertiary"
+                    if tertiary_session is not None
+                    else None
+                ),
                 output_dir=output_dir / "frames" / "composite",
                 expected_count=len(frames),
                 canvas_size=(args.composite_width, args.composite_height),
                 layout_name=args.layout,
                 background_color=args.background_color,
-                dual_structure_horizontal_crop=dual_structure_horizontal_crop,
+                dual_structure_horizontal_crop=structure_horizontal_crop,
+                structure_vertical_crop=structure_vertical_crop,
             )
             stage_statuses["compositor"] = "complete"
             status = "composite_rendered"
@@ -448,9 +497,9 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                 _log(log_path, "encoder", f"Validated MP4: {ffmpeg_result.output_path}")
         else:
             stage_statuses["structure_render"] = "not_requested"
-            if secondary_session is not None:
-                stage_statuses["structure_render_primary"] = "not_requested"
-                stage_statuses["structure_render_secondary"] = "not_requested"
+            if multiple_views:
+                for view_name in view_sessions:
+                    stage_statuses[f"structure_render_{view_name}"] = "not_requested"
             stage_statuses["compositor"] = "not_requested"
             stage_statuses["encoder"] = "not_requested"
             stage_statuses["movie_validation"] = "not_requested"
@@ -479,6 +528,9 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
                 session_transform_parity=session_transform_parity,
                 primary_session=session,
                 secondary_session=secondary_session,
+                tertiary_session=tertiary_session,
+                reference_model_ids=reference_model_ids,
+                moving_model_ids=moving_model_ids,
                 composite_result=composite_result,
                 ffmpeg_result=ffmpeg_result,
                 movie_validation=movie_validation,
@@ -666,6 +718,9 @@ def _base_manifest(
     session: Path,
     *,
     secondary_session: Path | None,
+    tertiary_session: Path | None,
+    reference_model_ids: tuple[str, ...],
+    moving_model_ids: tuple[str, ...],
 ) -> dict[str, object]:
     try:
         package_version = version("cryorole")
@@ -686,15 +741,36 @@ def _base_manifest(
         "run_dir": str(run_dir),
         "path_csv": str(path_csv),
         "ChimeraX_session": str(session),
-        "structure_view_count": 2 if secondary_session is not None else 1,
+        "reference_model_ids": list(reference_model_ids),
+        "moving_model_ids": list(moving_model_ids),
+        "reference_model_count": len(reference_model_ids),
+        "moving_model_count": len(moving_model_ids),
+        "structure_view_count": (
+            1 + int(secondary_session is not None) + int(tertiary_session is not None)
+        ),
         "dual_structure_horizontal_crop_fraction": (
-            getattr(args, "dual_structure_horizontal_crop", 0.0)
+            getattr(
+                args,
+                "structure_horizontal_crop",
+                getattr(args, "dual_structure_horizontal_crop", 0.0),
+            )
+        ),
+        "structure_horizontal_crop_fraction": getattr(
+            args,
+            "structure_horizontal_crop",
+            getattr(args, "dual_structure_horizontal_crop", 0.0),
+        ),
+        "structure_vertical_crop_fraction": getattr(
+            args, "structure_vertical_crop", 0.0
         ),
         "ChimeraX_sessions": {
-            "primary": str(session),
-            "secondary": (
-                str(secondary_session) if secondary_session is not None else None
-            ),
+            name: str(path)
+            for name, path in (
+                ("primary", session),
+                ("secondary", secondary_session),
+                ("tertiary", tertiary_session),
+            )
+            if path is not None
         },
         "resolved_CLI_arguments": resolved_args,
         "warnings": [],
@@ -727,6 +803,9 @@ def _success_manifest(
     session_transform_parity,
     primary_session,
     secondary_session,
+    tertiary_session,
+    reference_model_ids,
+    moving_model_ids,
     composite_result: CompositeResult | None,
     ffmpeg_result: FFmpegResult | None,
     movie_validation: MovieValidation | None,
@@ -755,17 +834,33 @@ def _success_manifest(
         crf=args.crf,
         movie_name=movie_name,
     )
+    view_sessions = {"primary": primary_session}
+    if secondary_session is not None:
+        view_sessions["secondary"] = secondary_session
+    if tertiary_session is not None:
+        view_sessions["tertiary"] = tertiary_session
+    multiple_views = len(view_sessions) > 1
     return {
         "status": status,
-        "structure_view_count": 2 if secondary_session is not None else 1,
+        "structure_view_count": len(view_sessions),
         "dual_structure_horizontal_crop_fraction": (
-            getattr(args, "dual_structure_horizontal_crop", 0.0)
+            getattr(
+                args,
+                "structure_horizontal_crop",
+                getattr(args, "dual_structure_horizontal_crop", 0.0),
+            )
+        ),
+        "structure_horizontal_crop_fraction": getattr(
+            args,
+            "structure_horizontal_crop",
+            getattr(args, "dual_structure_horizontal_crop", 0.0),
+        ),
+        "structure_vertical_crop_fraction": getattr(
+            args, "structure_vertical_crop", 0.0
         ),
         "ChimeraX_sessions": {
-            "primary": str(primary_session),
-            "secondary": (
-                str(secondary_session) if secondary_session is not None else None
-            ),
+            view_name: str(view_session)
+            for view_name, view_session in view_sessions.items()
         },
         "source_landscape": str(landscape.source_path),
         "canonical_frame": (
@@ -793,8 +888,21 @@ def _success_manifest(
         "matrix_vector_convention": "column vectors; x_scene = S @ x_raw",
         "pivot": pivot,
         "pivot_coordinate_frame": "ChimeraX scene",
-        "reference_model_ID": args.reference_model_id,
-        "moving_model_ID": args.moving_model_id,
+        "reference_model_ID": (
+            reference_model_ids[0] if len(reference_model_ids) == 1 else None
+        ),
+        "moving_model_ID": moving_model_ids[0] if len(moving_model_ids) == 1 else None,
+        "reference_model_ids": list(reference_model_ids),
+        "moving_model_ids": list(moving_model_ids),
+        "reference_model_count": len(reference_model_ids),
+        "moving_model_count": len(moving_model_ids),
+        "model_group_policy": {
+            "transform": "shared_absolute_scene_delta_from_each_model_baseline",
+            "shared_trajectory": True,
+            "shared_baseline_ro": True,
+            "shared_pivot": True,
+            "independent_model_motion": False,
+        },
         "trajectory_policies": {
             "interpolation": "SO(3) quaternion SLERP",
             "frames_per_segment": args.frames_per_segment,
@@ -866,6 +974,11 @@ def _success_manifest(
         "ChimeraX_completion": completion_status,
         "ChimeraX_return_codes": return_codes,
         "ChimeraX_completions": completion_statuses,
+        "model_group_validation": _model_group_validation_manifest(
+            completion_status,
+            reference_model_ids=reference_model_ids,
+            moving_model_ids=moving_model_ids,
+        ),
         "session_transform_parity": session_transform_parity,
         "compositor": _compositor_manifest(composite_result),
         "encoding": _encoding_manifest(
@@ -899,12 +1012,12 @@ def _success_manifest(
             "structure_frames": (
                 (
                     {
-                        "primary": str(output_dir / "frames" / "structure" / "primary"),
-                        "secondary": str(
-                            output_dir / "frames" / "structure" / "secondary"
-                        ),
+                        view_name: str(
+                            output_dir / "frames" / "structure" / view_name
+                        )
+                        for view_name in view_sessions
                     }
-                    if secondary_session is not None
+                    if multiple_views
                     else str(output_dir / "frames" / "structure")
                 )
                 if args.render_mode == "execute"
@@ -922,51 +1035,48 @@ def _success_manifest(
             ),
             "chimerax_python": (
                 {
-                    "primary": str(
-                        output_dir / "chimerax" / "primary" / "render_structure.py"
-                    ),
-                    "secondary": str(
-                        output_dir / "chimerax" / "secondary" / "render_structure.py"
-                    ),
+                    view_name: str(
+                        output_dir
+                        / "chimerax"
+                        / view_name
+                        / "render_structure.py"
+                    )
+                    for view_name in view_sessions
                 }
-                if secondary_session is not None
+                if multiple_views
                 else str(output_dir / "chimerax" / "render_structure.py")
             ),
             "chimerax_cxc": (
                 {
-                    "primary": str(
-                        output_dir / "chimerax" / "primary" / "run_render.cxc"
-                    ),
-                    "secondary": str(
-                        output_dir / "chimerax" / "secondary" / "run_render.cxc"
-                    ),
+                    view_name: str(
+                        output_dir / "chimerax" / view_name / "run_render.cxc"
+                    )
+                    for view_name in view_sessions
                 }
-                if secondary_session is not None
+                if multiple_views
                 else str(output_dir / "chimerax" / "run_render.cxc")
             ),
             "scene_transforms": str(output_dir / "chimerax" / "frame_transforms.csv"),
             "chimerax_render_status": (
                 {
-                    "primary": str(
-                        output_dir / "logs" / "chimerax_render_primary_status.json"
-                    ),
-                    "secondary": str(
-                        output_dir / "logs" / "chimerax_render_secondary_status.json"
-                    ),
+                    view_name: str(
+                        output_dir
+                        / "logs"
+                        / f"chimerax_render_{view_name}_status.json"
+                    )
+                    for view_name in view_sessions
                 }
-                if secondary_session is not None
+                if multiple_views
                 else str(output_dir / "logs" / "chimerax_render_status.json")
             ) if args.render_mode == "execute" else None,
             "chimerax_render_log": (
                 {
-                    "primary": str(
-                        output_dir / "logs" / "chimerax_render_primary.log"
-                    ),
-                    "secondary": str(
-                        output_dir / "logs" / "chimerax_render_secondary.log"
-                    ),
+                    view_name: str(
+                        output_dir / "logs" / f"chimerax_render_{view_name}.log"
+                    )
+                    for view_name in view_sessions
                 }
-                if secondary_session is not None
+                if multiple_views
                 else str(output_dir / "logs" / "chimerax_render.log")
             ) if args.render_mode == "execute" else None,
             "ffmpeg_log": (
@@ -982,6 +1092,34 @@ def _success_manifest(
         },
         "warnings": warnings,
         "errors": [],
+    }
+
+
+def _model_group_validation_manifest(
+    completion: Mapping[str, object] | None,
+    *,
+    reference_model_ids,
+    moving_model_ids,
+) -> dict[str, object]:
+    base = {
+        "reference_model_ids": list(reference_model_ids),
+        "moving_model_ids": list(moving_model_ids),
+    }
+    if completion is None:
+        return {"status": "not_checked_script_only", **base}
+    fields = (
+        "reference_baseline_matrices",
+        "moving_baseline_matrices",
+        "reference_unchanged_by_model",
+        "stationary_unchanged_by_model",
+        "moving_restored_by_model",
+        "moving_group_relative_transform_checks",
+        "moving_group_relative_transforms_preserved",
+    )
+    return {
+        "status": "validated",
+        **base,
+        **{field: completion.get(field) for field in fields},
     }
 
 
@@ -1006,14 +1144,24 @@ def _compositor_manifest(result: CompositeResult | None) -> dict[str, object] | 
             if result.secondary_structure_validation is not None
             else None
         ),
+        "tertiary_structure_source_dimensions": (
+            result.tertiary_structure_validation.dimensions
+            if result.tertiary_structure_validation is not None
+            else None
+        ),
         "dual_structure_horizontal_crop_fraction": (
             layout.dual_structure_horizontal_crop_fraction
         ),
+        "structure_horizontal_crop_fraction": (
+            layout.structure_horizontal_crop_fraction
+        ),
+        "structure_vertical_crop_fraction": layout.structure_vertical_crop_fraction,
         "structure_source_crop_rectangles": tuple(
             crop
             for crop in (
                 layout.primary_structure_source_crop,
                 layout.secondary_structure_source_crop,
+                layout.tertiary_structure_source_crop,
             )
             if crop is not None
         ),
@@ -1022,6 +1170,7 @@ def _compositor_manifest(result: CompositeResult | None) -> dict[str, object] | 
             for dimensions in (
                 layout.primary_structure_cropped_dimensions,
                 layout.secondary_structure_cropped_dimensions,
+                layout.tertiary_structure_cropped_dimensions,
             )
             if dimensions is not None
         ),
@@ -1030,6 +1179,7 @@ def _compositor_manifest(result: CompositeResult | None) -> dict[str, object] | 
             for alignment in (
                 layout.primary_structure_alignment,
                 layout.secondary_structure_alignment,
+                layout.tertiary_structure_alignment,
             )
             if alignment is not None
         ),
@@ -1042,6 +1192,7 @@ def _compositor_manifest(result: CompositeResult | None) -> dict[str, object] | 
             for region in (
                 layout.primary_structure_region,
                 layout.secondary_structure_region,
+                layout.tertiary_structure_region,
             )
             if region is not None
         ),
@@ -1050,10 +1201,12 @@ def _compositor_manifest(result: CompositeResult | None) -> dict[str, object] | 
             for destination in (
                 layout.primary_structure_destination,
                 layout.secondary_structure_destination,
+                layout.tertiary_structure_destination,
             )
             if destination is not None
         ),
         "dual_view_gap_pixels": layout.dual_view_gap_pixels,
+        "structure_view_gap_pixels": layout.structure_view_gap_pixels,
         "dual_view_gap_fraction": (
             layout.dual_view_gap_pixels / layout.canvas_size[0]
         ),

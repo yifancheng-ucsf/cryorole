@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cryoROLE Explore</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header>
+    <div><strong>cryoROLE Explore</strong> <span id="spaceBadge"></span></div>
+    <div id="status">Loading local run…</div>
+  </header>
+  <main>
+    <section class="controls">
+      <label>Representation <select id="representation"><option value="rv">RV (radians)</option><option value="euler">Euler ZYX (degrees)</option></select></label>
+      <label>Display <select id="displayMode"><option value="all">All displayed</option><option value="selected">Draft selected</option><option value="local">Local neighborhood</option></select></label>
+      <label>SLD display filter <select id="filterMode"><option value="all">All</option><option value="threshold">Threshold</option><option value="top">Top fraction</option></select></label>
+      <label>Value <input id="filterValue" type="number" step="0.1" value="1.5"></label>
+      <label>Radius (degrees) <input id="radius" type="range" min="0.1" max="45" step="0.1" value="6"><output id="radiusValue">6.0°</output></label>
+      <label>Selection ID <input id="selectionId" placeholder="state_1"></label>
+      <button id="evaluate">Evaluate exact full data</button>
+      <button id="confirm" class="scientific">Confirm / Create Selection</button>
+      <button id="downloadDraft">Download draft JSON</button>
+      <button id="downloadPreview">Download preview PNG</button>
+    </section>
+    <section class="notice">
+      Display filters and downsampling affect only these canvases. Exact count and Confirm always evaluate the full parent landscape with SO(3) geodesic distance.
+    </section>
+    <section id="summary" class="summary"></section>
+    <section class="readout" aria-live="polite">
+      <div><strong>Draft center</strong><br><span id="centerCurrent">not evaluated</span></div>
+      <div><strong>Corresponding RV (rad)</strong><br><span id="centerRv">—</span></div>
+      <div><strong>Public Euler ZYX (deg)</strong><br><span id="centerEuler">—</span></div>
+      <div><strong>Display color</strong><br><span id="colorInfo">SLD loading…</span></div>
+    </section>
+    <section class="plots">
+      <figure><canvas id="plot0" width="620" height="420"></canvas><figcaption id="caption0"></figcaption></figure>
+      <figure><canvas id="plot1" width="620" height="420"></canvas><figcaption id="caption1"></figcaption></figure>
+      <figure><canvas id="plot2" width="620" height="420"></canvas><figcaption id="caption2"></figcaption></figure>
+    </section>
+    <pre id="command">Click a point, adjust the radius, then Evaluate.</pre>
+    <div id="message" aria-live="polite"></div>
+  </main>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

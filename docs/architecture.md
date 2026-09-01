@@ -1,6 +1,6 @@
 # cryoROLE 2.0 Architecture Contract
 
-**Status:** Stable contract with active production-scale `run` work in progress
+**Status:** Stable contract with Core Productionization and Workflow UX implemented
 **Audience:** cryoROLE developers, Codex contributors, advanced users
 **Companion documents:**
 
@@ -19,9 +19,12 @@ The architecture is organized around a stable **Run Bundle** and user-facing com
 
 ```text
 align = prepare row-aligned metadata when default run matching is not enough
+preflight = inspect input/schema/matching/resources without creating a run
 run = compute raw facts
+status/next/guide = derive and explain safe workflow actions
 canonicalize = derive a canonical coordinate frame
 visualize = render display-only figures and display tables
+explore = create/evaluate display-only selection drafts locally
 select = create auditable particle selections
 export = bridge selections or transforms back to external tools
 ```
@@ -116,6 +119,7 @@ A standard run directory is:
 <run_dir>/
   run_manifest.json
   run_summary.json
+  run_report.md
 
   data/
     raw_landscape.npz
@@ -131,71 +135,20 @@ A standard run directory is:
     density_report.json
 
   visualizations/
-    raw_default/
-      visualization_report.json
-      all_particles/
-        display_table.csv
-        euler_alpha_beta.png
-        euler_beta_gamma.png
-        euler_alpha_gamma.png
-        euler_3view_projection.png
-        rotvec_xy.png
-        rotvec_yz.png
-        rotvec_xz.png
-        rotvec_3view_projection.png
-        landscape_3d_euler.png
-        landscape_3d_rotvec.png
-      filter_particles_by_sld_gt_1p5/
-        display_table.csv
-        euler_alpha_beta.png
-        euler_beta_gamma.png
-        euler_alpha_gamma.png
-        euler_3view_projection.png
-        rotvec_xy.png
-        rotvec_yz.png
-        rotvec_xz.png
-        rotvec_3view_projection.png
-        landscape_3d_euler.png
-        landscape_3d_rotvec.png
+    quicklook/
+      all_euler_3view_projection.png
+      all_rotvec_3view_projection.png
+      sld_ge_1_euler_3view_projection.png
+      sld_ge_1_rotvec_3view_projection.png
+      top_40pct_euler_3view_projection.png
+      top_40pct_rotvec_3view_projection.png
+      sld_log_distribution.png
     canonical/
       <canonical_id>/
-        visualization_report.json
-        all_particles/
-          display_table.csv
-          euler_alpha_beta.png
-          euler_beta_gamma.png
-          euler_alpha_gamma.png
+        <visual_id>/
           euler_3view_projection.png
-          rotvec_xy.png
-          rotvec_yz.png
-          rotvec_xz.png
           rotvec_3view_projection.png
-          landscape_3d_euler.png
-          landscape_3d_rotvec.png
-        filter_particles_by_sld_gt_1p5/
-          display_table.csv
-          euler_alpha_beta.png
-          euler_beta_gamma.png
-          euler_alpha_gamma.png
-          euler_3view_projection.png
-          rotvec_xy.png
-          rotvec_yz.png
-          rotvec_xz.png
-          rotvec_3view_projection.png
-          landscape_3d_euler.png
-          landscape_3d_rotvec.png
-        filter_particles_by_top_sld_40pct/
-          display_table.csv
-          euler_alpha_beta.png
-          euler_beta_gamma.png
-          euler_alpha_gamma.png
-          euler_3view_projection.png
-          rotvec_xy.png
-          rotvec_yz.png
-          rotvec_xz.png
-          rotvec_3view_projection.png
-          landscape_3d_euler.png
-          landscape_3d_rotvec.png
+          visualization_report.json
 
   canonical/
     <canonical_id>/
@@ -216,6 +169,7 @@ Required production artifacts:
 |---|---|
 | `run_manifest.json` | top-level provenance and artifact index |
 | `run_summary.json` | human-readable run summary |
+| `run_report.md` | concise human navigation and warning report |
 | `data/raw_landscape.npz` | machine-readable raw landscape |
 | `data/raw_landscape.csv` | user-facing raw landscape table |
 | `data/match_table.csv` | matched-particle provenance |
@@ -223,6 +177,22 @@ Required production artifacts:
 | `reports/match_report.json` | matching diagnostics |
 
 `debug/landscape_debug.json` may exist only when explicitly requested.
+
+New run bundles are transactional. `run` writes a uniquely named sibling
+staging directory, records lifecycle states (`preparing`, `matching`,
+`computing_ro`, `computing_sld`, `writing`, `validating`, `completed`, or
+`failed`), validates required artifacts, and publishes the whole directory only
+after success. `run_manifest.json` schema 3.0 records
+`bundle_transaction.state = completed`; `.cryorole_bundle_complete` is the
+completion marker. Transaction-aware downstream commands reject a bundle whose
+state or marker is incomplete. Legacy bundles without transaction metadata
+remain readable through the compatibility layer, but they are never confused
+with a partially written transactional bundle.
+
+`--overwrite` is an atomic whole-bundle replacement. A completed old bundle is
+kept until the replacement validates and is ready to publish; failed
+replacement cannot leave stale canonical, selection, export, or visualization
+children mixed into the new run.
 
 ---
 
@@ -308,6 +278,7 @@ Small public controls:
 --mov-domain NAME     default: mov
 --output-dir RUN      default: cryorole_outputs
 --row-aligned         explicit row-order assumption; requires equal row counts
+--allow-low-overlap   explicit override for key-match coverage below 50%
 --sld-metric METRIC   rotvec_euclidean|so3_geodesic; default: rotvec_euclidean
 --no-visualize        skip raw quick-look visualizations
 ```
@@ -321,8 +292,14 @@ Without `--row-aligned`, default matching is key-based:
 1. CryoSPARC `.cs` inputs use `uid`.
 2. STAR inputs use `_rlnTomoParticleName` when present, otherwise `_rlnImageName` / `rlnImageName`.
 3. Matching reports must record the resolved key, input row counts, matched count, dropped ref-only/mov-only counts, and whether rows were reordered.
-4. If matching succeeds but reorders rows or drops particles, `run` must emit a prominent warning and continue only with matched pairs.
-5. If matching cannot be resolved safely, `run` must fail clearly and suggest `cryorole align --key ...` when an explicit STAR key is needed, or manual pre-alignment.
+4. Matching reports also record ref coverage, mov coverage, overlap relative to
+   the smaller input, and whether low overlap was explicitly allowed.
+5. Zero matches always fail before pose normalization, RO, or SLD. Public
+   key-matched runs below the centralized 50% overlap threshold fail unless
+   `--allow-low-overlap` is explicit; the override is recorded in the match
+   report, run summary, and manifest.
+6. If matching succeeds but reorders rows or drops particles, `run` must emit a prominent warning and continue only with matched pairs.
+7. If matching cannot be resolved safely, `run` must fail clearly and suggest `cryorole align --key ...` when an explicit STAR key is needed, or manual pre-alignment.
 
 Production-scale `run` must move toward an array-native backend:
 
@@ -352,17 +329,66 @@ R_ro = np.matmul(np.swapaxes(R_ref, 1, 2), R_mov)
 6. SLD density must support batched kNN query to avoid materializing large `n x k` intermediate arrays.
 7. Raw visualization is generated by default as display-only quick-look output and must be disableable with `--no-visualize`.
 8. Full source-row metadata should not be copied into per-particle Python objects in the production path.
+9. `--run-backend auto` resolves to `array_native`; `dataframe_compat` remains an
+   explicit reference/migration backend.
+10. Production order is minimal identity/pose extraction, identity matching,
+    normalization of matched rows only, vectorized RO, batched SLD, direct NPZ,
+    and chunked raw CSV. Both RV-Euclidean and SO(3) queries obey
+    `density_query_batch_size` and never allocate an `N x N` distance matrix.
 
-Default raw quick-look visualization should use the legacy style: rainbow color mapping with low SLD rendered red and high SLD rendered blue, common axis units across 2D and 3D figures, and no percentile clipping. It writes two preview groups by default:
+### 5.1 Run and source identity
+
+Every new run receives a stable unique `run_id`. `run_summary.json` and
+`run_manifest.json` record a `source_identities` mapping for `ref` and `mov`:
 
 ```text
-all_particles                  all matched rows
-filter_particles_by_sld_gt_1p5 rows with sld_raw > 1.5
+original_path
+resolved_path                 absolute path resolved at run time
+source_type
+size_bytes
+mtime_epoch_sec / mtime_ns
+sha256                        streamed in fixed-size chunks
+row_count
 ```
 
-These are display previews, not selections. The default run color scale uses `vmax = min(max displayed SLD, 100)`. Rows above `vmax` remain plotted with saturated high-density color, and stored `sld_raw` / `sld_display` values are not changed. This style is a `run` convenience; refined display policies belong in `cryorole visualize`.
+Selections, canonical reports/frames, and export reports record the parent
+`run_id`. Export verifies the current source file against the recorded SHA-256
+before applying source row IDs. Missing originals require explicit
+`--relocated-ref` / `--relocated-mov`; relocated files must pass type and hash
+validation. A hash mismatch is a hard failure. Bundles predating source hashes
+require explicit `--allow-unverified-source`, and that legacy override is
+recorded in `export_report.json`.
 
-Filtered visualization directories should use filesystem-safe labels such as `filter_particles_by_sld_gt_2p0` or `filter_particles_by_top_sld_40pct`; exact thresholds and fractions belong in `visualization_report.json`.
+Default raw quick-look visualization uses the legacy style: rainbow color
+mapping with low SLD rendered red and high SLD rendered blue, equal display
+units, and no percentile clipping. It writes exactly seven flat PNG files:
+
+```text
+visualizations/quicklook/all_euler_3view_projection.png
+visualizations/quicklook/all_rotvec_3view_projection.png
+visualizations/quicklook/sld_ge_1_euler_3view_projection.png
+visualizations/quicklook/sld_ge_1_rotvec_3view_projection.png
+visualizations/quicklook/top_40pct_euler_3view_projection.png
+visualizations/quicklook/top_40pct_rotvec_3view_projection.png
+visualizations/quicklook/sld_log_distribution.png
+```
+
+The projection pairs show all particles, `sld_raw >= 1`, and the top 40% by
+`sld_raw`; top-cutoff ties are retained and each subset is sampled
+deterministically when needed. The log histogram uses every positive finite
+full-landscape `sld_raw` value and marks SLD 1, SLD 100, P99, and a detected
+tail-jump threshold. These are display previews, not selections. All six
+projection figures share `vmax = min(full-landscape max SLD, 100)`. Rows above
+`vmax` remain plotted with saturated high-density color, and stored `sld_raw` /
+`sld_display` values are not changed. Quick-look policy and resolved color
+bounds, subset counts, cutoff policy, and rendered point counts are recorded in
+`run_summary.json`; the quick-look directory itself contains only the seven PNG
+files. Expanded display products belong to explicit `cryorole visualize`
+workflows.
+
+`run_report.md` concisely explains inputs, matching, policy, core paths,
+quick-look meaning, diagnostics, and next commands. It is derived from the same
+typed results as JSON reports and remains present with `--no-visualize`.
 
 Translation distance is not part of the current default `run` analysis coordinate and must not affect RO, SLD, canonicalization, selection, or export by default.
 
@@ -377,6 +403,78 @@ single-particle defocus-as-Z: future explicit proxy policy only
 These diagnostics must be recorded as metadata/report fields, not interpreted as relative orientation.
 
 Detailed plan and acceptance criteria are in `docs/production_run_plan.md`.
+
+### 5.2 Workflow preflight contract
+
+Public preflight is:
+
+```bash
+cryorole preflight --ref REF_METADATA --mov MOV_METADATA
+cryorole run --ref REF_METADATA --mov MOV_METADATA --dry-run
+```
+
+Both commands and production `run` use the same array-native minimal-field,
+identity, matching, and pose-schema service. CryoSPARC uses mmap field views;
+RELION validates the complete particle-loop shape while retaining only required
+pose/identity columns. Preflight creates no run bundle and
+does not modify inputs. Its readiness is one of `READY`,
+`READY_WITH_WARNINGS`, or `BLOCKED`; CLI exit codes are respectively 0, 1, and
+2. JSON report schema 1.0 records source identities, convention resolution,
+identity diagnostics, matching coverage, resource formulas and assumptions,
+warnings/errors, the resolved run command, and an actionable next command.
+
+Run revalidates the source identity after the shared preflight result is
+produced. A changed source cannot be silently consumed. Resource estimates are
+transparent planning estimates, not guarantees, and expose their per-row,
+batch, fixed-overhead, preview, and disk-margin assumptions.
+
+### 5.3 Artifact-derived workflow status
+
+```bash
+cryorole status --run-dir RUN
+cryorole next --run-dir RUN
+cryorole guide --run-dir RUN --non-interactive
+```
+
+`status` reads the actual manifest/state/marker, raw NPZ, canonical frames,
+visualizations, selections, selected-derived landscapes, exports, and current
+source hash availability. It does not trust a standalone mutable workflow-state
+file. `next` labels actions as required, recommended, or optional and emits
+exact commands. Canonicalization is optional; visualization never counts as a
+selection. `guide` is an orchestration layer over preflight/status/next and
+existing command services. It never silently asserts row alignment, permits low
+overlap, chooses a canonical frame/neighborhood, creates a Selection, exports,
+or overwrites artifacts.
+
+### 5.4 Offline interactive exploration contract
+
+```bash
+cryorole explore --run-dir RUN --space raw
+cryorole explore --run-dir RUN --space canonical --canonical-id default
+```
+
+The first implementation uses a standard-library service bound only to
+`127.0.0.1` and packaged HTML/CSS/JavaScript with no public CDN. The browser can
+render linked EA or RV projections, change display-only filters, click a draft
+center, and request evaluation. JavaScript contains no scientific selection
+implementation and receives no arbitrary filesystem access.
+
+The service loads array-native NPZ once. It may deterministically downsample
+for display, but every exact count and Confirm uses the exact full parent landscape
+through the same Python SO(3) radius evaluator used by CLI select.
+The UI must always distinguish displayed point count from full candidate count.
+
+```text
+draft selection                 no scientific artifact is written
+confirmed scientific selection standard selections/<selection_id>/ artifact
+```
+
+Confirm requires a user-provided selection ID, refuses overwrite, and validates
+session token, run ID, and parent landscape SHA-256. The Selection records its
+timestamp, parent run ID, parent landscape path/hash/space, center input and
+evaluated RV/EA, public Euler convention, SO(3) metric, radius, full/selected
+counts, and display-filter/downsample provenance. Display threshold/top
+fraction never restricts the scientific candidate universe.
 
 ---
 
@@ -547,6 +645,12 @@ If a qualifying jump is found, rows above the jump are marked `sld_display_is_ou
 
 Reports must record the display-outlier mode, parameters, detected threshold, outlier count, outlier fraction, display cap when used, and enough high-density diagnostics to distinguish true dense states from near-duplicate artifacts. Suggested diagnostics include `max_sld_raw`, `p99_sld_raw`, `p99_5_sld_raw`, `max_over_display_vmax`, `largest_tail_jump_ratio`, `display_outlier_threshold_sld`, `n_sld_display_outliers`, `fraction_sld_display_outliers`, and near-duplicate/near-identity RO warnings when applicable.
 
+An `sld_raw > 100` observation emits `HIGH_SLD_PRESENT` because default
+quick-look colors saturate there; it is not by itself a scientific outlier
+classification. A qualifying tail jump emits `DISCONTINUOUS_SLD_TAIL`, and any
+floor use emits `DISTANCE_FLOOR_APPLIED`. These diagnostics never modify or
+exclude rows.
+
 ---
 
 ## 8. Canonicalization contract
@@ -641,30 +745,14 @@ When `--use-frame FRAME` is provided, canonicalize must validate the frame, appl
 
 Visualization is display-only. It must not alter raw/canonical landscapes or create selections.
 
-Default visualization writes:
+Default visualization uses `--view 2d`, both coordinate representations,
+`sld_display >= 1`, the legacy rainbow colormap, and PNG output. It writes
+exactly:
 
 ```text
-euler_alpha_beta.png
-euler_beta_gamma.png
-euler_alpha_gamma.png
 euler_3view_projection.png
-rotvec_xy.png
-rotvec_yz.png
-rotvec_xz.png
 rotvec_3view_projection.png
-landscape_3d_euler.png
-landscape_3d_rotvec.png
-display_table.csv
 visualization_report.json
-distributions_1d/
-  euler_alpha_distribution.png
-  euler_beta_distribution.png
-  euler_gamma_distribution.png
-  rotvec_x_distribution.png
-  rotvec_y_distribution.png
-  rotvec_z_distribution.png
-  distribution_1d_report.json
-  distribution_1d_stats.csv
 ```
 
 Public command:
@@ -681,19 +769,25 @@ Small public controls:
 --selection-id ID
 --use-selected-landscape
 --visual-id ID                 default: default
+--view 2d[,1d,3d]              default: 2d
 --representation both|euler|rotvec   default: both
 --colormap NAME                default: rainbow_r
---range AXIS:LOWER:UPPER       display-only row/range filter; may repeat
+--range AXIS:LOWER:UPPER       display-only row filter; may repeat
 --top-fraction F               display top fraction by sld_display
---threshold T                  display rows above density threshold
---formats png[,svg,pdf]        default: png
+--sld-threshold T              display rows with sld_display >= T; default: 1
+--all                          disable the default SLD threshold
+--format png[,svg,pdf]         may repeat; default: png
 --vmin V
 --vmax V
---bins N                       1D histogram bins; default: 72
---hist-mode count|percent      1D histogram mode; default: count
---kde-bandwidth VALUE          default: scott; scott, silverman, or positive float
---xlim MIN:MAX                 1D x-axis display limit
---ylim MIN:MAX                 1D y-axis display limit
+--point-size VALUE
+--alpha VALUE
+--axis-limit AXIS:LOWER:UPPER  viewport only; may repeat
+--max-points N                 override deterministic 2D/3D point cap
+--bins auto|N                  1D histogram bins; default: auto
+--hist-mode count|percent      1D histogram mode; default: percent
+--kde                          add coordinate KDE to 1D
+--kde-bandwidth VALUE          scott, silverman, or positive float
+--3d-mode interactive|static   default: interactive
 --overwrite
 ```
 
@@ -702,12 +796,14 @@ Rules:
 1. Users do not choose `--output-dir`; visualization output stays under `RUN/visualizations/`.
 2. Default style is legacy rainbow: low density is red, high density is blue, and display axes use equal units within each 2D/3D figure so plots do not distort.
 3. Public `visualize` colors by `sld_display`. Users may change the display colormap with `--colormap`, but the color field is not a public workflow choice.
-4. Default format is PNG; SVG/PDF are opt-in through `--formats`.
-5. `--top-fraction` and `--threshold` are display filters, not selections, and must be mutually exclusive.
-6. `--range` is a display-only filter and viewport policy. Euler ranges filter the displayed row set and set Euler axis limits for matching axes. Rotvec plots show the same filtered rows in rotvec units rather than converting Euler bounds into fake rotvec bounds. Rotvec ranges likewise set rotvec axis limits only.
+4. Default format is PNG; SVG/PDF are opt-in through `--format`.
+5. `--top-fraction`, `--sld-threshold`, and `--all` are mutually exclusive display policies, not selections. Top-fraction cutoff ties are retained.
+6. `--range` filters the displayed row set. `--axis-limit` controls only the viewport. Bounds from one representation are never converted into artificial bounds for the other representation.
 7. Public visualization does not expose Euler convention controls. Euler plots use the source landscape's recorded convention, which for public run/canonicalize outputs is extrinsic fixed-axis ZYX.
-8. Basic 1D distributions are written by default from the same displayed rows as the 2D/3D views. They include only a histogram and KDE curve; no mean line, peak finding, overlay comparison, or selection is created.
-9. 1D outputs follow `--representation`: `euler` writes alpha/beta/gamma, `rotvec` writes x/y/z, and `both` writes all six. `--formats` applies to 1D figures too.
+8. `--view` accepts `2d`, `1d`, `3d`, or comma-separated combinations. All requested artifacts stay flat in the same visualization directory.
+9. A 1D view writes one combined Euler coordinate-distribution figure and/or one combined rotvec coordinate-distribution figure. It uses every display-filtered row, independent of 2D/3D point caps. The defaults are auto-binned percentage histograms and no KDE. Explicit KDE is coordinate-space smoothing, not an SO(3) density estimate.
+10. Interactive 3D writes a self-contained offline HTML viewer with rotation, zoom, hover, and Euler/rotvec switching where available. It is display-only and cannot create or confirm a Selection. `--3d-mode static` writes ordinary figures instead.
+11. Visualization does not write a display table by default. Compact arrays are filtered before plotting materialization; deterministic display sampling cannot affect 1D statistics, stored landscapes, or scientific selection.
 
 Default output paths:
 
@@ -748,16 +844,19 @@ visualizations/selections/<selection_id>/selected_landscape/<visual_id>/
 Reports must record `selected_landscape_used = true`, the selected-landscape path, the parent landscape recorded by the selected landscape, and whether SLD values were inherited or recomputed. This remains display-only; visualization must not create, modify, or reinterpret selections or parent landscapes.
 When the selected-derived landscape report records `coordinate_space`, visualization should inherit that recorded space for the display coordinate source so canonical selected landscapes remain in canonical coordinates without requiring the user to repeat `--space canonical`.
 
-Visualization reports must record source landscape, coordinate source, representation, inherited Euler convention, fixed display color field, colormap, display density field, display filters, top fraction, threshold, ranges, format list, color scale, 1D distribution policy, selection provenance when used, and generated files.
+Visualization reports must record source landscape, coordinate source, requested views, representation, inherited Euler convention, fixed display color field, colormap, display density field, display filters, top fraction or threshold policy, ranges, viewport limits, format list, color scale, per-view row counts and sampling policies, 1D distribution policy and statistics when used, 3D mode when used, selection provenance when used, and generated files.
 
-When visualization uses automatic SLD color scaling, it may exclude rows marked `sld_display_is_outlier` from automatic colorbar scaling by default. Outlier points must remain plotted and present in display tables; values above the chosen `vmax` may render with the colormap's saturated top color. Reports must make display-outlier handling visible via fields such as:
+Automatic SLD color scaling follows the compact run quick-look policy: it uses
+the full candidate landscape and resolves `vmax = min(max(sld_display), 100)`.
+The default threshold also supplies `vmin = 1`. Explicit `--vmin` and `--vmax`
+override these display bounds. Tail-jump outliers remain plotted and stored
+unchanged; values above `vmax` render with the colormap's saturated top color.
+Reports keep their count visible and record the resolved bounds and sources:
 
 ```text
-color_scale_mode = tail_jump_exclude_outliers
-tail_search_fraction = 0.01
-tail_jump_factor = 5.0
-max_display_outlier_fraction = 0.002
 display_color_vmax
+color_vmin_source
+color_vmax_source
 n_sld_display_outliers
 fraction_sld_display_outliers
 ```
@@ -811,7 +910,8 @@ cryorole animate \
   --path-space ea \
   --chimerax-session scene.cxs \
   --reference-model-id "#1" \
-  --moving-model-id "#2" \
+  --reference-model-id "#2" \
+  --moving-model-id "#3" \
   --pivot X,Y,Z \
   --baseline-ro first-waypoint \
   --map-frame raw \
@@ -917,9 +1017,14 @@ x_target = pivot + delta_active @ (x_baseline - pivot)
 
 ChimeraX `Place` maps local coordinates to scene coordinates and composition
 acts right-to-left. The generated renderer therefore assigns the absolute
-moving transform as `pivot_delta * saved_moving_baseline`. This API contract is
-covered by generated-script and pure numerical tests; real ChimeraX integration
-remains an optional local validation.
+transform of every declared moving model as
+`pivot_delta * saved_model_baseline`. Both model-ID options are repeatable and
+define non-empty, duplicate-free, disjoint rigid groups. Reference and
+otherwise undeclared models remain fixed; every mover receives the same delta
+from its own baseline, preserving group-relative transforms. Completion checks
+all models and restores every mover. This API contract is covered by
+generated-script and pure numerical tests; real ChimeraX integration remains
+an optional local validation.
 
 Implemented animation bundle:
 
@@ -968,25 +1073,31 @@ animation frames are automatically removed.
 The implemented presentation refinement limits projection gaps to 1.25%,
 resolves a high-contrast marker and coordinate font for the final composite
 scale, and leaves visualize display selection and viewport policy unchanged.
-Optional `--secondary-chimerax-session` enables two synchronized structure
-views in the upper stacked region. Both
-sessions must share model IDs, initial model transforms, baseline RO, scene
+Optional `--secondary-chimerax-session` and `--tertiary-chimerax-session`
+support one, two, or three synchronized structure views in the upper stacked
+region; tertiary requires secondary. All requested sessions must share every
+declared model ID and its initial model transform, baseline RO, scene
 basis, pivot, and trajectory; only camera or display styling may differ.
 Each renderer must complete and validate independently before composition.
-Dual scripts, logs, status artifacts, and frames use `primary/secondary`
-paths. Single view remains the default with its existing paths, and dual view
-does not combine with `side_by_side`.
+Multi-view scripts, logs, status artifacts, and frames use
+`primary/secondary/tertiary` paths as applicable. Single view remains the
+default with its existing paths, and multiple views do not combine with
+`side_by_side`.
 
-Implemented `--dual-structure-horizontal-crop` optionally removes a fixed
-user-declared
-horizontal fraction from both sides of every structure frame, then anchors the
-primary view right and the secondary view left. Crop and destination geometry
+Implemented `--structure-horizontal-crop` and `--structure-vertical-crop`
+optionally remove fixed, symmetric fractions from every multi-view structure
+frame. The former `--dual-structure-horizontal-crop` remains a compatibility
+alias. Two views align right/left; three align right/center/left. Crop and destination geometry
 are resolved once, recorded, and never inferred per frame. Source frames and
 camera/model transforms remain unchanged. The value is finite, defaults to
-zero, must satisfy `0 <= F < 0.5`, and nonzero values require dual-view
+zero, must satisfy `0 <= F < 0.5`, and nonzero values require multi-view
 `stacked` layout. Animation projection colorbars use the concise visible label
 `SLD`; the underlying field and provenance remain
 `sld_display`.
+
+Single and dual stacked composition retain the 64/36 structure/landscape
+split. Three-view composition uses 58% structure and 42% landscape to reduce
+unused vertical space without changing source frames or camera transforms.
 
 Animation output must state:
 
@@ -1004,7 +1115,9 @@ camera-only views. For `canonical_rv = raw_rv @ C` and
 `S @ C`. The command supports raw or explicit audited session bases, never
 moves models, restores the saved camera, does not overwrite the source
 session, and records all axis and screen-basis vectors in
-`canonical_views.json`.
+`canonical_views.json`. Optional `--save-sessions` also writes one derived
+camera-only `.cxs` for each canonical axis; model scene transforms remain
+unchanged and the source session is never overwritten.
 
 ---
 
@@ -1251,7 +1364,10 @@ Rules:
 9. Export must not write canonical/display coordinates as physical poses.
 10. Export must fail clearly if required `ref_source_row_id` / `mov_source_row_id` provenance is missing.
 11. Export reports must record selection path, run directory, source files, selected counts, row-id provenance, domain choice, requested and resolved formats, output directory, output files, overwrite policy, and warnings.
-12. User-facing errors should point to the compact path first: provide `--run-dir RUN --selection-id ID`, or use `--selection PATH/to/selection.json` for advanced direct artifact export.
+12. Export reports record `run_id`, selection `parent_run_id`, per-domain source
+    verification status, relocation status, and any explicit legacy-unverified
+    override.
+13. User-facing errors should point to the compact path first: provide `--run-dir RUN --selection-id ID`, or use `--selection PATH/to/selection.json` for advanced direct artifact export.
 
 ### 11.2 Future transform export
 
@@ -1297,6 +1413,8 @@ Responsibilities should stay separated:
 
 ```text
 io/            readers and artifact stores/writers
+provenance/    streamed source identity and export-time verification
+run_bundle/    transactional staging, validation, commit, and completion checks
 normalize/     convention resolution and schema normalization
 match/         identity resolution and matching
 core/          RO, representations, distances, density
@@ -1312,6 +1430,37 @@ gui/           optional frontend only
 ```
 
 Do not put convention logic in CLI, plotting, GUI, or export code. Do not put frontend logic in core modules.
+
+The stable command boundary is:
+
+```text
+argparse namespace
+  -> typed request
+  -> workflow/domain service
+  -> typed result
+  -> human or JSON frontend output
+```
+
+`cryorole/cli/main.py` owns only root parser construction, dispatch, top-level
+user-error handling, and compatibility exports. Argparse registration lives in
+`cli/parsers.py`; thin command adapters live under `cli/commands/`. Scientific
+and artifact decisions live in `workflows/run_service.py`,
+`canonicalize/service.py`, `visualize/service.py`, `select/service.py`, and the
+standard `select/artifacts.py` writer. These services must not import
+`cryorole.cli`.
+
+Input identity is resolved once by `workflows/input_policy.py`. The resulting
+typed ref/mov convention, identity, and matching policies are consumed by
+preflight, formal run, and new-run guide planning. Formal run uses the shared
+content-level `SourceIdentityGuard` before consuming preflight-normalized data;
+size and mtime are diagnostics, never substitutes for the recorded SHA-256.
+
+For NPZ downstream work, visualization applies full-array display filtering
+before constructing its plotting table, and reports parent/input, filtered,
+2D, and independently sampled 3D counts. Selection evaluates the complete
+parent arrays (never a display sample) and materializes full Landscape rows
+only when a selected-derived landscape requires the compatibility writer.
+DataFrame readers remain supported for legacy JSON/CSV artifacts.
 
 ---
 
@@ -1333,6 +1482,9 @@ visualization tests
 selection tests
 export tests
 animation trajectory/transform/render-contract tests
+preflight parity, diagnostics, exit-code, and no-side-effect tests
+artifact-derived status/next and non-interactive guide tests
+interactive full-parent exactness, Confirm-boundary, provenance, and localhost security tests
 CLI regression tests
 ```
 
@@ -1346,6 +1498,14 @@ Production-scale tests should protect:
 - `--no-visualize` behavior;
 - memory profile report generation;
 - benchmark scripts for 100k/1M synthetic datasets without putting very large runs in the fast suite.
+- source relocation/hash mismatch/legacy override and selection/run-id mismatch;
+- transaction fault injection and old-bundle rollback;
+- array-native/reference backend order, RO/RV/Euler, SLD, provenance, and row-count equivalence.
+- preflight/run reuse and changed-input rejection;
+- display sampling/filtering never changing exact selection membership;
+- interactive and CLI SO(3) radius parity, including boundary points;
+- no artifact before Confirm, standard Selection after Confirm, no overwrite,
+  stale run/hash rejection, loopback-only serving, fixed routes, and no CDN.
 
 ---
 
@@ -1358,4 +1518,6 @@ Avoid duplicating long implementation details across multiple files.
 - `docs/production_run_plan.md` owns current production-scale run implementation details.
 - `docs/roadmap.md` owns priorities and release sequencing.
 - `docs/animation_export.md` owns the proposed offline animation design, validation gates, and phased implementation plan.
-- Future `docs/cli_reference.md` should own user-facing command help and examples.
+- `docs/workflow_ux.md` owns the end-to-end preflight/status/explore/Confirm tutorial and concept explanations.
+- `docs/cli_reference.md` owns user-facing command summaries and examples.
+- `docs/faq.md` owns workflow troubleshooting and safety-boundary explanations.

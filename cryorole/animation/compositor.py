@@ -9,9 +9,11 @@ from pathlib import Path
 from PIL import Image, ImageColor, UnidentifiedImageError
 
 
-COMPOSITE_LAYOUT_VERSION = "4"
+COMPOSITE_LAYOUT_VERSION = "6"
 STACKED_STRUCTURE_FRACTION = 0.64
 STACKED_LANDSCAPE_FRACTION = 0.36
+THREE_VIEW_STRUCTURE_FRACTION = 0.58
+THREE_VIEW_LANDSCAPE_FRACTION = 0.42
 DUAL_VIEW_GAP_FRACTION = 0.0125
 
 
@@ -38,17 +40,25 @@ class CompositeLayout:
     background_color: str
     primary_structure_region: tuple[int, int, int, int] | None = None
     secondary_structure_region: tuple[int, int, int, int] | None = None
+    tertiary_structure_region: tuple[int, int, int, int] | None = None
     primary_structure_destination: tuple[int, int, int, int] | None = None
     secondary_structure_destination: tuple[int, int, int, int] | None = None
+    tertiary_structure_destination: tuple[int, int, int, int] | None = None
     primary_structure_source_crop: tuple[int, int, int, int] | None = None
     secondary_structure_source_crop: tuple[int, int, int, int] | None = None
+    tertiary_structure_source_crop: tuple[int, int, int, int] | None = None
     primary_structure_cropped_dimensions: tuple[int, int] | None = None
     secondary_structure_cropped_dimensions: tuple[int, int] | None = None
+    tertiary_structure_cropped_dimensions: tuple[int, int] | None = None
     primary_structure_alignment: str = "center"
     secondary_structure_alignment: str | None = None
+    tertiary_structure_alignment: str | None = None
     dual_structure_horizontal_crop_fraction: float = 0.0
+    structure_horizontal_crop_fraction: float = 0.0
+    structure_vertical_crop_fraction: float = 0.0
     structure_view_count: int = 1
     dual_view_gap_pixels: int = 0
+    structure_view_gap_pixels: int = 0
     layout_version: str = COMPOSITE_LAYOUT_VERSION
     structure_fraction: float | None = None
     landscape_fraction: float | None = None
@@ -69,6 +79,7 @@ class CompositeResult:
     landscape_validation: PNGSequenceValidation
     structure_validation: PNGSequenceValidation
     secondary_structure_validation: PNGSequenceValidation | None = None
+    tertiary_structure_validation: PNGSequenceValidation | None = None
 
 
 def validate_png_sequence(
@@ -120,12 +131,14 @@ def compose_frame_sequences(
     landscape_dir: str | Path,
     structure_dir: str | Path,
     secondary_structure_dir: str | Path | None = None,
+    tertiary_structure_dir: str | Path | None = None,
     output_dir: str | Path,
     expected_count: int,
     canvas_size: tuple[int, int],
     layout_name: str,
     background_color: str,
     dual_structure_horizontal_crop: float = 0.0,
+    structure_vertical_crop: float = 0.0,
 ) -> CompositeResult:
     """Compose validated frames with one fixed, optional dual-view source crop."""
 
@@ -145,10 +158,16 @@ def compose_frame_sequences(
         expected_count=expected_count,
         label="landscape",
     )
+    if tertiary_structure_dir is not None and secondary_structure_dir is None:
+        raise ValueError("tertiary structure view requires a secondary structure view")
     structure = validate_png_sequence(
         structure_dir,
         expected_count=expected_count,
-        label="primary structure" if secondary_structure_dir is not None else "structure",
+        label=(
+            "primary structure"
+            if secondary_structure_dir is not None
+            else "structure"
+        ),
     )
     secondary_structure = (
         validate_png_sequence(
@@ -157,6 +176,15 @@ def compose_frame_sequences(
             label="secondary structure",
         )
         if secondary_structure_dir is not None
+        else None
+    )
+    tertiary_structure = (
+        validate_png_sequence(
+            tertiary_structure_dir,
+            expected_count=expected_count,
+            label="tertiary structure",
+        )
+        if tertiary_structure_dir is not None
         else None
     )
     layout = resolve_composite_layout(
@@ -168,9 +196,15 @@ def compose_frame_sequences(
             if secondary_structure is not None
             else None
         ),
+        tertiary_structure_dimensions=(
+            tertiary_structure.dimensions
+            if tertiary_structure is not None
+            else None
+        ),
         layout_name=layout_name,
         background_color=background_color,
         dual_structure_horizontal_crop=dual_structure_horizontal_crop,
+        structure_vertical_crop=structure_vertical_crop,
     )
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -193,6 +227,13 @@ def compose_frame_sequences(
                 layout.secondary_structure_destination,
                 source_crop=layout.secondary_structure_source_crop,
             )
+        if tertiary_structure is not None:
+            _paste_contained(
+                canvas,
+                tertiary_structure.paths[index],
+                layout.tertiary_structure_destination,
+                source_crop=layout.tertiary_structure_source_crop,
+            )
         output = destination / f"frame_{index:06d}.png"
         canvas.save(output, format="PNG")
         outputs.append(output)
@@ -214,6 +255,7 @@ def compose_frame_sequences(
         landscape_validation=landscape,
         structure_validation=structure,
         secondary_structure_validation=secondary_structure,
+        tertiary_structure_validation=tertiary_structure,
     )
 
 
@@ -223,23 +265,41 @@ def resolve_composite_layout(
     landscape_dimensions: tuple[int, int],
     structure_dimensions: tuple[int, int],
     secondary_structure_dimensions: tuple[int, int] | None = None,
+    tertiary_structure_dimensions: tuple[int, int] | None = None,
     layout_name: str,
     background_color: str,
     padding_pixels: int = 24,
     gap_pixels: int = 24,
     dual_structure_horizontal_crop: float = 0.0,
+    structure_vertical_crop: float = 0.0,
 ) -> CompositeLayout:
     """Resolve fixed source crops and aspect-preserving destination rectangles."""
 
     width, height = _validate_canvas_size(canvas_size)
     if layout_name not in {"stacked", "side_by_side"}:
         raise ValueError("layout_name must be 'stacked' or 'side_by_side'")
+    if (
+        tertiary_structure_dimensions is not None
+        and secondary_structure_dimensions is None
+    ):
+        raise ValueError("tertiary structure view requires a secondary structure view")
+    if tertiary_structure_dimensions is not None and layout_name != "stacked":
+        raise ValueError("multiple structure views are supported only with stacked layout")
     if secondary_structure_dimensions is not None and layout_name != "stacked":
         raise ValueError("dual structure view is supported only with stacked layout")
     crop_fraction = validate_dual_structure_horizontal_crop(
         dual_structure_horizontal_crop,
         has_secondary=secondary_structure_dimensions is not None,
         layout_name=layout_name,
+    )
+    vertical_crop_fraction = validate_structure_crop_fraction(
+        structure_vertical_crop,
+        axis_name="vertical",
+        has_multiple_views=secondary_structure_dimensions is not None,
+        layout_name=layout_name,
+    )
+    structure_view_count = 1 + int(secondary_structure_dimensions is not None) + int(
+        tertiary_structure_dimensions is not None
     )
     if padding_pixels < 0 or gap_pixels < 0:
         raise ValueError("Composite padding and gap must be non-negative")
@@ -248,8 +308,12 @@ def resolve_composite_layout(
         inner_height = height - 2 * padding_pixels - gap_pixels
         if inner_width < 1 or inner_height < 2:
             raise ValueError("Composite canvas is too small for configured padding and gap")
-        structure_fraction = STACKED_STRUCTURE_FRACTION
-        landscape_fraction = STACKED_LANDSCAPE_FRACTION
+        if structure_view_count == 3:
+            structure_fraction = THREE_VIEW_STRUCTURE_FRACTION
+            landscape_fraction = THREE_VIEW_LANDSCAPE_FRACTION
+        else:
+            structure_fraction = STACKED_STRUCTURE_FRACTION
+            landscape_fraction = STACKED_LANDSCAPE_FRACTION
         structure_height = min(
             inner_height - 1,
             max(1, int(round(inner_height * structure_fraction))),
@@ -288,41 +352,74 @@ def resolve_composite_layout(
             structure_width,
             inner_height,
         )
-    if secondary_structure_dimensions is None:
+    if structure_view_count == 1:
         primary_structure_region = structure_region
         secondary_structure_region = None
+        tertiary_structure_region = None
         dual_view_gap_pixels = 0
+        structure_view_gap_pixels = 0
     else:
-        dual_view_gap_pixels = _dual_view_gap(width, structure_region[2])
-        view_width = (structure_region[2] - dual_view_gap_pixels) // 2
-        primary_structure_region = (
-            structure_region[0],
-            structure_region[1],
-            view_width,
-            structure_region[3],
+        structure_view_gap_pixels = _structure_view_gap(
+            width,
+            structure_region[2],
+            structure_view_count,
         )
-        secondary_structure_region = (
-            structure_region[0] + view_width + dual_view_gap_pixels,
-            structure_region[1],
-            view_width,
-            structure_region[3],
+        dual_view_gap_pixels = structure_view_gap_pixels
+        view_width = (
+            structure_region[2]
+            - structure_view_gap_pixels * (structure_view_count - 1)
+        ) // structure_view_count
+        view_regions = tuple(
+            (
+                structure_region[0]
+                + index * (view_width + structure_view_gap_pixels),
+                structure_region[1],
+                view_width,
+                structure_region[3],
+            )
+            for index in range(structure_view_count)
         )
-    primary_crop, primary_cropped_dimensions = _horizontal_crop_rectangle(
+        primary_structure_region = view_regions[0]
+        secondary_structure_region = view_regions[1]
+        tertiary_structure_region = view_regions[2] if structure_view_count == 3 else None
+    primary_crop, primary_cropped_dimensions = _structure_crop_rectangle(
         structure_dimensions,
         crop_fraction,
+        vertical_crop_fraction,
     )
     secondary_crop_and_dimensions = (
-        _horizontal_crop_rectangle(
+        _structure_crop_rectangle(
             secondary_structure_dimensions,
             crop_fraction,
+            vertical_crop_fraction,
         )
         if secondary_structure_dimensions is not None
         else None
     )
+    tertiary_crop_and_dimensions = (
+        _structure_crop_rectangle(
+            tertiary_structure_dimensions,
+            crop_fraction,
+            vertical_crop_fraction,
+        )
+        if tertiary_structure_dimensions is not None
+        else None
+    )
     primary_alignment = "right" if crop_fraction > 0 else "center"
     secondary_alignment = (
-        "left" if crop_fraction > 0 else "center"
+        (
+            "center"
+            if tertiary_structure_dimensions is not None
+            else "left"
+        )
+        if crop_fraction > 0
+        else "center"
         if secondary_structure_dimensions is not None
+        else None
+    )
+    tertiary_alignment = (
+        ("left" if crop_fraction > 0 else "center")
+        if tertiary_structure_dimensions is not None
         else None
     )
     primary_destination = _contain_rectangle(
@@ -339,6 +436,15 @@ def resolve_composite_layout(
         if secondary_crop_and_dimensions is not None
         else None
     )
+    tertiary_destination = (
+        _contain_rectangle(
+            tertiary_crop_and_dimensions[1],
+            tertiary_structure_region,
+            horizontal_alignment=tertiary_alignment,
+        )
+        if tertiary_crop_and_dimensions is not None
+        else None
+    )
     return CompositeLayout(
         name=layout_name,
         canvas_size=(width, height),
@@ -352,12 +458,19 @@ def resolve_composite_layout(
         background_color=background_color,
         primary_structure_region=primary_structure_region,
         secondary_structure_region=secondary_structure_region,
+        tertiary_structure_region=tertiary_structure_region,
         primary_structure_destination=primary_destination,
         secondary_structure_destination=secondary_destination,
+        tertiary_structure_destination=tertiary_destination,
         primary_structure_source_crop=primary_crop,
         secondary_structure_source_crop=(
             secondary_crop_and_dimensions[0]
             if secondary_crop_and_dimensions is not None
+            else None
+        ),
+        tertiary_structure_source_crop=(
+            tertiary_crop_and_dimensions[0]
+            if tertiary_crop_and_dimensions is not None
             else None
         ),
         primary_structure_cropped_dimensions=primary_cropped_dimensions,
@@ -366,14 +479,23 @@ def resolve_composite_layout(
             if secondary_crop_and_dimensions is not None
             else None
         ),
+        tertiary_structure_cropped_dimensions=(
+            tertiary_crop_and_dimensions[1]
+            if tertiary_crop_and_dimensions is not None
+            else None
+        ),
         primary_structure_alignment=primary_alignment,
         secondary_structure_alignment=secondary_alignment,
+        tertiary_structure_alignment=tertiary_alignment,
         dual_structure_horizontal_crop_fraction=crop_fraction,
-        structure_view_count=2 if secondary_structure_dimensions is not None else 1,
+        structure_horizontal_crop_fraction=crop_fraction,
+        structure_vertical_crop_fraction=vertical_crop_fraction,
+        structure_view_count=structure_view_count,
         dual_view_gap_pixels=dual_view_gap_pixels,
+        structure_view_gap_pixels=structure_view_gap_pixels,
         aspect_policy=(
             "fixed_source_crop_then_contain_no_stretch"
-            if crop_fraction > 0
+            if crop_fraction > 0 or vertical_crop_fraction > 0
             else "contain_letterbox_no_crop"
         ),
         structure_fraction=structure_fraction,
@@ -395,48 +517,93 @@ def validate_dual_structure_horizontal_crop(
         value = float(fraction)
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            "dual structure horizontal crop must be finite with 0 <= FRACTION < 0.5"
+            "structure horizontal crop must be finite with 0 <= FRACTION < 0.5"
         ) from exc
     if not math.isfinite(value) or not 0 <= value < 0.5:
         raise ValueError(
-            "dual structure horizontal crop must be finite with 0 <= FRACTION < 0.5"
+            "structure horizontal crop must be finite with 0 <= FRACTION < 0.5"
         )
     if value > 0 and (not has_secondary or layout_name != "stacked"):
         raise ValueError(
-            "non-zero dual structure horizontal crop is allowed only for "
-            "dual-view stacked layout"
+            "non-zero structure horizontal crop is allowed only for "
+            "dual-view or three-view stacked layout"
         )
     return value
 
 
-def _horizontal_crop_rectangle(
-    source_dimensions: tuple[int, int],
+def validate_structure_crop_fraction(
     fraction: float,
+    *,
+    axis_name: str,
+    has_multiple_views: bool,
+    layout_name: str,
+) -> float:
+    """Validate one fixed symmetric structure-crop fraction."""
+
+    try:
+        value = float(fraction)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"structure {axis_name} crop must be finite with 0 <= FRACTION < 0.5"
+        ) from exc
+    if not math.isfinite(value) or not 0 <= value < 0.5:
+        raise ValueError(
+            f"structure {axis_name} crop must be finite with 0 <= FRACTION < 0.5"
+        )
+    if value > 0 and (not has_multiple_views or layout_name != "stacked"):
+        raise ValueError(
+            f"non-zero structure {axis_name} crop requires multi-view stacked layout"
+        )
+    return value
+
+
+def _structure_crop_rectangle(
+    source_dimensions: tuple[int, int],
+    horizontal_fraction: float,
+    vertical_fraction: float,
 ) -> tuple[tuple[int, int, int, int], tuple[int, int]]:
-    """Return a Pillow crop rectangle using deterministic half-up rounding."""
+    """Return one fixed Pillow crop rectangle using half-up rounding."""
 
     source_width, source_height = map(int, source_dimensions)
     if source_width <= 0 or source_height <= 0:
         raise ValueError("Source frame dimensions must be positive")
-    crop_pixels = int(math.floor(source_width * fraction + 0.5))
-    cropped_width = source_width - 2 * crop_pixels
-    if cropped_width < 1:
-        raise ValueError("dual structure horizontal crop leaves no source pixels")
+    horizontal_pixels = int(math.floor(source_width * horizontal_fraction + 0.5))
+    vertical_pixels = int(math.floor(source_height * vertical_fraction + 0.5))
+    cropped_width = source_width - 2 * horizontal_pixels
+    cropped_height = source_height - 2 * vertical_pixels
+    if cropped_width < 1 or cropped_height < 1:
+        raise ValueError("structure crop leaves no source pixels")
     return (
-        (crop_pixels, 0, source_width - crop_pixels, source_height),
-        (cropped_width, source_height),
+        (
+            horizontal_pixels,
+            vertical_pixels,
+            source_width - horizontal_pixels,
+            source_height - vertical_pixels,
+        ),
+        (cropped_width, cropped_height),
     )
 
 
-def _dual_view_gap(canvas_width: int, region_width: int) -> int:
-    """Resolve a small gap while keeping both dual-view regions exactly equal."""
+def _structure_view_gap(
+    canvas_width: int,
+    region_width: int,
+    view_count: int,
+) -> int:
+    """Resolve small equal gaps while keeping all view regions exactly equal."""
 
+    if view_count not in {2, 3}:
+        raise ValueError("structure view count must be 2 or 3")
     maximum = max(1, int(canvas_width * 0.015))
-    gap = min(maximum, max(1, int(round(canvas_width * DUAL_VIEW_GAP_FRACTION))))
-    if (region_width - gap) % 2:
-        gap = gap + 1 if gap < maximum else gap - 1
-    if gap < 0 or region_width - gap < 2:
-        raise ValueError("Composite structure region is too small for dual view")
+    target = min(maximum, max(1, int(round(canvas_width * DUAL_VIEW_GAP_FRACTION))))
+    candidates = tuple(
+        gap
+        for gap in range(1, maximum + 1)
+        if (region_width - gap * (view_count - 1)) % view_count == 0
+        and region_width - gap * (view_count - 1) >= view_count
+    )
+    if not candidates:
+        raise ValueError("Composite structure region is too small for multiple views")
+    gap = min(candidates, key=lambda value: (abs(value - target), value))
     return gap
 
 

@@ -13,7 +13,6 @@ from scipy.spatial.transform import Rotation
 
 from cryorole.canonicalize.transforms import validate_canonical_transform
 from cryorole.core.euler_conventions import (
-    CANONICAL_EULER_ANGLE_COLUMNS,
     RAW_EULER_ANGLE_COLUMNS,
     resolve_euler_convention,
 )

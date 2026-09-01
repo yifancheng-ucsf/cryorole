@@ -20,6 +20,8 @@ from cryorole.io.writers.landscape_store import (
 )
 from cryorole.models.policies import SelectionMetadataExportPolicy
 from cryorole.models.selection import Selection
+from cryorole.provenance import verify_source_identity
+from cryorole.run_bundle import validate_completed_run_bundle
 
 
 DOMAIN_ROW_ID_COLUMNS = {
@@ -43,6 +45,8 @@ def export_selection_metadata_subset(
 
     _validate_policy(policy)
     run_dir = Path(policy.run_dir).resolve() if policy.run_dir is not None else None
+    if run_dir is not None:
+        validate_completed_run_bundle(run_dir)
     selection_path_obj = Path(selection_path).resolve() if selection_path else None
     selection_dir = selection_path_obj.parent if selection_path_obj else None
     output_dir = _resolve_output_dir(
@@ -50,7 +54,6 @@ def export_selection_metadata_subset(
         run_dir=run_dir,
         selection=selection,
     )
-    _prepare_output_dir(output_dir, overwrite=policy.overwrite)
 
     selected_rows = _load_selected_rows(
         selection=selection,
@@ -70,7 +73,15 @@ def export_selection_metadata_subset(
     for domain in domains:
         _validated_domain_row_ids(selected_rows, DOMAIN_ROW_ID_COLUMNS[domain])
 
-    source_info = _resolve_source_info(run_dir) if run_dir is not None else {}
+    source_info, source_verification, run_id = (
+        _resolve_and_verify_sources(run_dir, policy=policy, domains=domains)
+        if run_dir is not None else ({}, {}, None)
+    )
+    if run_id is not None and selection.parent_run_id not in (None, run_id):
+        raise ValueError(
+            f"Selection parent_run_id {selection.parent_run_id!r} does not match run_id {run_id!r}"
+        )
+    _prepare_output_dir(output_dir, overwrite=policy.overwrite)
     timestamp = datetime.now(timezone.utc).isoformat()
 
     selected_keys_path = output_dir / "selected_particle_keys.txt"
@@ -122,6 +133,8 @@ def export_selection_metadata_subset(
         "timestamp": timestamp,
         "run_dir": str(run_dir) if run_dir is not None else None,
         "selection_id": selection.selection_id,
+        "parent_run_id": selection.parent_run_id,
+        "run_id": run_id,
         "selection_path": str(selection_path_obj) if selection_path_obj is not None else None,
         "domain": policy.domain,
         "format_requested": policy.format,
@@ -137,6 +150,8 @@ def export_selection_metadata_subset(
             domain: source_info.get(domain, {}).get("path")
             for domain in ("ref", "mov")
         },
+        "source_verification": source_verification,
+        "allow_unverified_source": bool(policy.allow_unverified_source),
         "export_policy": to_json_safe(policy),
         "warnings": warnings,
     }
@@ -318,6 +333,58 @@ def _resolve_source_info(run_dir: Path) -> dict[str, dict[str, str | None]]:
             "source_type": _metadata_format_from_source_type(source_type, resolved_path),
         }
     return info
+
+
+def _resolve_and_verify_sources(
+    run_dir: Path,
+    *,
+    policy: SelectionMetadataExportPolicy,
+    domains: tuple[str, ...],
+) -> tuple[dict[str, dict[str, str | None]], dict[str, dict[str, Any]], str | None]:
+    summary = _read_json_if_exists(run_dir / "run_summary.json")
+    manifest = _read_json_if_exists(run_dir / "run_manifest.json")
+    run_id_value = summary.get("run_id") or manifest.get("run_id")
+    run_id = str(run_id_value) if run_id_value is not None else None
+    identities = summary.get("source_identities") or manifest.get("source_identities") or {}
+    if not isinstance(identities, Mapping):
+        identities = {}
+    legacy_info = _resolve_source_info(run_dir)
+    source_info: dict[str, dict[str, str | None]] = dict(legacy_info)
+    verification: dict[str, dict[str, Any]] = {}
+    relocated = {"ref": policy.relocated_ref, "mov": policy.relocated_mov}
+    for domain in domains:
+        record = identities.get(domain) if isinstance(identities, Mapping) else None
+        if record is None:
+            legacy = legacy_info.get(domain, {})
+            legacy_path = legacy.get("path")
+            record = {
+                "path": legacy_path,
+                "resolved_path": legacy_path,
+                "source_type": legacy.get("source_type"),
+            }
+        result = verify_source_identity(
+            record,
+            relocated_path=relocated[domain],
+            allow_unverified_source=policy.allow_unverified_source,
+        )
+        source_type = (
+            str(record.get("source_type"))
+            if isinstance(record, Mapping) and record.get("source_type") is not None
+            else legacy_info.get(domain, {}).get("source_type")
+        )
+        resolved_path = Path(result.resolved_path)
+        source_info[domain] = {
+            "path": result.resolved_path,
+            "source_type": _metadata_format_from_source_type(source_type, resolved_path),
+        }
+        verification[domain] = {
+            "resolved_path": result.resolved_path,
+            "verification_status": result.verification_status,
+            "relocated": result.relocated,
+            "sha256_verified": result.sha256_verified,
+            "legacy_unverified_allowed": result.legacy_unverified_allowed,
+        }
+    return source_info, verification, run_id
 
 
 def _read_json_if_exists(path: Path) -> dict[str, Any]:

@@ -324,5 +324,5 @@ def test_output_bundle_runs_public_visualize_directly(tmp_path, capsys) -> None:
     assert result == 0
     visualization_dir = output_dir / "visualizations" / "raw" / "rotation_test"
     assert (visualization_dir / "visualization_report.json").exists()
-    assert (visualization_dir / "rotvec_xy.png").exists()
+    assert (visualization_dir / "rotvec_3view_projection.png").exists()
     assert str(visualization_dir) in capsys.readouterr().out

@@ -7,7 +7,7 @@ This repository contains **cryoROLE 2.0**, a policy-driven cryo-EM relative-orie
 The core workflow is:
 
 ```text
-input -> normalize -> match -> compute -> canonicalize -> visualize -> select -> export -> manifest
+input -> preflight -> run -> inspect -> optional canonicalize -> explore -> confirm selection -> export
 ```
 
 The primary engineering goal is to make this workflow stable, auditable, scalable, reproducible, and safe for large cryo-EM particle sets. Do not add new analysis variants before preserving the scientific and artifact contracts below.
@@ -36,12 +36,32 @@ animation-specific coordinate, rendering, artifact, and validation contract.
 The active engineering priority is:
 
 ```text
-Make cryorole run production-scale.
+Keep the production-scale workflow safe while enforcing typed service boundaries.
 ```
 
-This means reducing memory pressure in the `run` path by moving the production backend toward array-native data structures, vectorized RO computation, batched SLD density calculation, and chunked raw CSV export.
+Core Productionization is implemented. Workflow UX adds shared preflight,
+artifact-derived status/next guidance, offline draft selection, and a resumable
+guide without changing the scientific backend. The CLI is a frontend: input
+policy resolution, source-identity verification, run orchestration,
+canonicalization, visualization, selection, and Selection artifact writing
+belong to shared typed services. NPZ visualize/select paths must filter or
+evaluate compact arrays before materializing plotting/compatibility tables.
 
 Canonicalization, visualization, selection, and export already have a working command-layer contract. Do not destabilize them while refactoring the run backend.
+
+### Workflow UX
+
+- `preflight` and `run --dry-run` must use the same input/matching service as production `run`.
+- Preflight is side-effect-free and reports `READY`, `READY_WITH_WARNINGS`, or `BLOCKED`.
+- Interactive display sampling and filters are display-only. Exact selection counts and Confirm operate on the full parent NPZ.
+- Explore drafts are not Selection artifacts. Only explicit Confirm or `cryorole select` creates a scientific Selection.
+- Interactive radius selection must reuse the Python SO(3) selection evaluator.
+- The interactive server binds only to `127.0.0.1`, exposes no arbitrary filesystem routes, and uses no public CDN.
+- `status` and `next` derive state from actual artifacts, manifests, and completion markers.
+- `guide` must not silently enable row alignment, allow low overlap, canonicalize, select, export, or overwrite.
+- `preflight`, `run`, and new-run `guide` must use the same resolved input-policy service; mapping-file policy must never fall back to a default identity key.
+- Formal run consumption must revalidate source content identity, not only size and modification time.
+- CLI select and interactive Confirm must use the same standard Selection artifact writer.
 
 ---
 
@@ -110,7 +130,8 @@ RO = R_ref^-1 R_mov
 - Raw CSV Euler column names may remain simplified as `raw_ea_zyx_*`; reports/manifests own the intrinsic/extrinsic interpretation.
 - Full landscape JSON is debug-only and must be opt-in.
 - Production run backend should be array-native; DataFrame/object-column paths are compatibility/debug paths.
-- Raw visualization is a default convenience and should write both all-particle and `sld_raw > 1.5` preview views using legacy rainbow style. Display `vmax` is `min(displayed max SLD, 100)` unless disabled with `--no-visualize`.
+- Raw visualization is a default compact quick-look. Unless disabled with `--no-visualize`, `run` writes six flat Euler/RV three-view PNGs for all particles, `sld_raw >= 1`, and the top 40% by `sld_raw`, plus `sld_log_distribution.png`. Top-fraction cutoff ties are retained. Projection sampling is deterministic and display-only; the log histogram uses the full landscape. All projection figures share `vmax = min(full-landscape max SLD, 100)` and legacy rainbow style. Expanded visualization belongs to explicit `cryorole visualize` workflows.
+- `run_report.md` is the concise human navigation report for inputs, matching, policies, core artifacts, quick-look meaning, SLD diagnostics, and next commands. It does not replace JSON reports or manifests and is still written with `--no-visualize`.
 - Translation distance is future report-only diagnostic work. Do not make translation distance a default `run` analysis coordinate or let it affect RO, SLD, canonicalization, selection, or export by default.
 
 ### Canonicalize
@@ -128,8 +149,11 @@ RO = R_ref^-1 R_mov
 - Visualization is display-only.
 - Public visualization uses the source landscape's recorded Euler convention; do not expose Euler convention overrides in the compact public command.
 - Display filters, axis ranges, downsampling, and style defaults must not alter raw/canonical landscapes or selections.
-- Public visualization should default to legacy rainbow style, PNG output, fixed `sld_display` coloring, optional display colormap choice, and equal display units within each figure so plots do not distort.
-- Public visualization may write basic 1D distributions for displayed Euler/rotvec coordinates; these use the same display-filtered rows and remain display-only.
+- Public visualization defaults to `--view 2d`, `sld_display >= 1`, both Euler and rotvec representations, legacy rainbow style, PNG output, fixed `sld_display` coloring, and exactly two three-view projection figures plus `visualization_report.json`.
+- `--view` may request `2d`, `1d`, `3d`, or comma-separated combinations. Outputs remain flat in one visualization directory; 1D and 3D are opt-in.
+- Basic 1D distributions use every row that passes the display filters, not a 2D/3D plotting sample. The default is auto-binned percentage histograms; coordinate KDE is explicit opt-in and must be labeled as coordinate-space smoothing rather than an SO(3) density estimate.
+- Public 3D defaults to a self-contained offline interactive HTML viewer. It is exploratory and must not create, confirm, or write a Selection; static 3D is an explicit alternative.
+- `--range` filters rows. `--axis-limit` changes only the viewport. Neither is a scientific selection.
 - Public visualization outputs should stay under the run bundle `visualizations/` directory, using a user-provided `visual_id` or `default`.
 - Visualization may consume a selected-derived landscape when explicitly requested; this is still display-only and must not mutate the parent raw/canonical landscape or the selection.
 - `sld_display` is display-only; do not let it drive scientific defaults.
@@ -195,7 +219,7 @@ R_ro = np.matmul(np.swapaxes(R_ref, 1, 2), R_mov)
 5. SLD/kNN density must support batched query to avoid materializing huge `n x k` arrays at once.
 6. Raw CSV writing should be post-computation and chunked/streaming where practical.
 7. Preserve the existing SLD distance-floor stabilization, and add tail-jump SLD display-outlier detection without changing `sld_raw`.
-8. Density reports should warn about large near-duplicate or near-identity RO concentrations and should count display-only SLD outliers.
+8. Density reports should warn about large near-duplicate or near-identity RO concentrations and should count display-only SLD outliers. They distinguish `HIGH_SLD_PRESENT` (`sld_raw > 100`) from `DISCONTINUOUS_SLD_TAIL` and `DISTANCE_FLOOR_APPLIED`; none changes or excludes particles.
 9. Memory profiling and benchmarks should report peak RSS, wall time, row counts, and artifact sizes.
 
 Detailed implementation plan: `docs/production_run_plan.md`.
@@ -227,6 +251,9 @@ Detailed implementation plan: `docs/production_run_plan.md`.
 - Do not silently guess ChimeraX transform direction, scene basis, baseline pose, or pivot frame.
 - Do not present interpolated rigid-body density frames as independent experimental reconstructions.
 - Do not remove reports/manifests or downgrade test coverage.
+- Do not treat an explore draft, clicked point, display sample, or display filter as a scientific Selection.
+- Do not implement selection math in browser JavaScript or evaluate Confirm against only displayed points.
+- Do not expose the interactive service beyond loopback or provide arbitrary file access.
 
 ---
 

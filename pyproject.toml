@@ -24,10 +24,38 @@ cryorole = "cryorole.cli.main:main"
 [tool.setuptools.packages.find]
 include = ["cryorole*"]
 
+[tool.setuptools.package-data]
+"cryorole.interactive" = ["assets/*"]
+
 [project.optional-dependencies]
 test = [
   "pytest",
+  "ruff",
 ]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+exclude = [
+  ".codex_tmp",
+  ".idea",
+  "build",
+  "cryorole.egg-info",
+  "Github",
+  "old_files",
+  "cryorole2_landscape_projection.py",
+  "cryorole2_plot_1d_updated.py",
+  "cryorole_chimerax_viewer.py",
+  "main.py",
+  "star_align_exclude.py",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/*.py" = ["E402"]
+"tests/**/*.py" = ["F841"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

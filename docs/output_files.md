@@ -12,6 +12,9 @@ A typical run directory contains:
 ```text
 run_manifest.json
 run_summary.json
+run_report.md
+bundle_state.json
+.cryorole_bundle_complete
 
 data/
   raw_landscape.npz
@@ -39,6 +42,20 @@ audit downstream analysis.
 Provides a concise human-readable summary of the run, including inputs,
 matching, resolved policies, and important output paths.
 
+`run_report.md`
+
+Provides a short human guide to the run outputs, quick-look figures, warnings,
+and next commands. JSON reports and the manifest remain authoritative.
+
+New summaries and manifests share a unique `run_id` and a ref/mov
+`source_identities` mapping containing the original path, run-resolved absolute
+path, source type, file size, mtime, streamed SHA-256, and source row count.
+Selections, canonical reports/frames, and exports record their parent run ID.
+
+`bundle_state.json` records transactional lifecycle history.
+`.cryorole_bundle_complete` is written last; new transactional bundles without
+both a completed manifest state and this marker are rejected downstream.
+
 ## Data Directory
 
 `data/raw_landscape.npz`
@@ -64,11 +81,49 @@ policy/report details. JSON reports and manifests are the audit layer.
 Full object-record landscape JSON is debug-only and is not the production
 persistence contract.
 
+`cryorole preflight --json REPORT.json` may write a schema-1.0 report at an
+explicit path outside a run bundle. The report contains source identities,
+matching and pose-schema diagnostics, resource-estimate formulas/assumptions,
+readiness, and exact commands. Preflight does not create the run directory.
+
+If `cryorole guide --execute-run` launches a run, it may add
+`reports/guide_history.json` to record that orchestration action. Status itself
+is derived from actual artifacts and does not maintain a separate mutable
+workflow-state file.
+
 ## Visualizations
 
-`visualizations/` contains display-only figures and display tables. Display
+`visualizations/` contains display-only figures, offline viewers, and reports. Display
 filters, display ranges, downsampling, and color scaling do not alter raw or
 canonical landscapes and do not create scientific selections.
+
+The default `run` quick-look is intentionally minimal:
+
+```text
+visualizations/quicklook/
+  all_euler_3view_projection.png
+  all_rotvec_3view_projection.png
+  sld_ge_1_euler_3view_projection.png
+  sld_ge_1_rotvec_3view_projection.png
+  top_40pct_euler_3view_projection.png
+  top_40pct_rotvec_3view_projection.png
+  sld_log_distribution.png
+```
+
+That directory contains only the seven PNG files. Range counts, top-cutoff tie
+policy, full-data histogram diagnostics, and the shared color bound are
+recorded in `run_summary.json` and the manifest artifact index. The bundle-root
+`run_report.md` explains them. Use explicit `cryorole visualize` for expanded
+display products.
+
+Each explicit public visualization directory includes `visualization_report.json`.
+The default also contains only `euler_3view_projection.png` and
+`rotvec_3view_projection.png`. Optional 1D and 3D products are requested with
+`--view` and remain flat in that directory. For NPZ inputs the report records
+the full parent/input count, count after display filtering, independently
+resolved per-view counts, random seed, and deterministic sampling policy. 1D
+uses every filtered row; 2D/3D point limits never alter the scientific parent
+landscape or create a selection.
 
 ## Canonical Landscapes
 
@@ -113,6 +168,18 @@ selection_summary.json
 A selection is a scientific decision artifact. It is not the same thing as a
 visualization filter.
 
+CLI select and interactive Confirm use the same standard artifact writer for
+these five files. `selected_landscape_rows.csv` retains ref/mov source-row IDs
+for export backtracking; re-export consumes the existing Selection and does not
+create a different selection schema.
+
+An interactive explorer click or evaluation is only an in-memory draft and
+writes nothing here. Explicit Confirm creates the normal files above and adds
+interaction provenance to `selection.json`: timestamp, parent run ID,
+landscape path/SHA-256/space, input and evaluated center, Euler convention,
+SO(3) metric and radius, full/selected counts, and display filter/downsample
+settings. Confirm refuses to overwrite an existing selection ID.
+
 ## Exports
 
 Exports live under:
@@ -124,6 +191,12 @@ exports/<selection_id>/
 Export reads an explicit selection and writes source metadata subsets for the
 requested domain (`ref`, `mov`, or `both`). Export does not reselect, rematch, or
 rewrite source poses with display/canonical coordinates.
+
+Before subset writing, export verifies the current source against the recorded
+SHA-256. `export_report.json` records per-domain verification and relocation
+status. A missing original can be replaced only with explicit
+`--relocated-ref` / `--relocated-mov` whose hash matches. Legacy bundles without
+hashes require `--allow-unverified-source`, and that decision is recorded.
 
 ## NPZ, CSV, and JSON Roles
 
@@ -165,3 +238,7 @@ otherwise.
 - Canonical landscape: derived coordinate frame for inspection and comparison.
 - Visualization: display-only renderings and display tables.
 - Selection: explicit scientific particle subset with provenance for export.
+
+Interactive display sampling is also display-only. The UI reports both the
+displayed count and full candidate count; exact selection always evaluates the
+full parent landscape.

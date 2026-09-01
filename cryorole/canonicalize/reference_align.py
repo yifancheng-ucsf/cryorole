@@ -130,6 +130,7 @@ def canonicalize_landscape_arrays(
             sld_unfloored=arrays.sld_unfloored,
             sld_raw=arrays.sld_raw,
             sld_display=arrays.sld_display,
+            sld_display_is_outlier=arrays.sld_display_is_outlier,
             sld_was_floored=arrays.sld_was_floored,
             sld_local_k_mean=arrays.sld_local_k_mean,
             sld_effective_local_k_mean=arrays.sld_effective_local_k_mean,

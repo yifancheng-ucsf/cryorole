@@ -15,7 +15,13 @@ def test_threshold_and_top_fraction_are_stable_and_source_ordered() -> None:
     values = np.asarray([1.0, 2.0, 2.0, 3.0])
 
     assert resolve_display_indices(values, threshold=2.0).tolist() == [1, 2, 3]
-    assert resolve_display_indices(values, top_fraction=0.5).tolist() == [2, 3]
+    assert resolve_display_indices(values, top_fraction=0.5).tolist() == [1, 2, 3]
+
+
+def test_top_fraction_retains_cutoff_ties() -> None:
+    values = np.asarray([1.0, 2.0, 3.0, 3.0, 4.0])
+
+    assert resolve_display_indices(values, top_fraction=0.40).tolist() == [2, 3, 4]
     assert sort_display_indices(
         np.asarray([0, 1, 2, 3]),
         values,

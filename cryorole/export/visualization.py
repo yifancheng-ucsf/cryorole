@@ -118,10 +118,19 @@ def write_landscape_visualizations(
     display_table_filename: str | None = None,
     artifact_layout: str = "flat",
     selection_metadata: Mapping[str, Any] | None = None,
+    output_profile: str = "full",
 ) -> dict[str, Any]:
     """Write display-only table, static figures, and optional debug CSVs."""
 
     _ensure_matplotlib_available()
+    if output_profile not in {"full", "quicklook"}:
+        raise ValueError("output_profile must be 'full' or 'quicklook'")
+    if output_profile == "quicklook" and (
+        write_projection_csvs or generate_histograms or generate_axis_direction_map
+    ):
+        raise ValueError(
+            "quicklook output_profile supports only the two 2D triptych figures"
+        )
     resolved_euler = resolve_euler_convention(
         euler_convention,
         scipy_euler_sequence=euler_sequence,
@@ -203,6 +212,7 @@ def write_landscape_visualizations(
         generate_axis_direction_map=generate_axis_direction_map,
         artifact_layout=artifact_layout,
         display_table_filename=display_table_filename,
+        output_profile=output_profile,
     )
     _ensure_visualization_paths_available(expected_paths, overwrite=overwrite)
 
@@ -236,15 +246,16 @@ def write_landscape_visualizations(
         source_display = data.iloc[display_indices].copy(deep=True)
         source_rotvec = coordinates[display_indices]
         source_euler = euler_coordinates[display_indices]
-        display_tables.append(
-            _display_table(
-                source_display,
-                source_rotvec,
-                source_euler,
-                coordinate_source=source,
-                representations=representations,
+        if output_profile == "full":
+            display_tables.append(
+                _display_table(
+                    source_display,
+                    source_rotvec,
+                    source_euler,
+                    coordinate_source=source,
+                    representations=representations,
+                )
             )
-        )
         n_after_filter_by_source[source] = int(len(display_indices))
         n_2d_by_source[source] = int(_downsample_indices(len(display_indices), max_points_2d, random_seed).size)
         indices_3d = _downsample_indices(len(display_indices), max_points_3d, random_seed)
@@ -275,27 +286,29 @@ def write_landscape_visualizations(
                     color_vmin=resolved_color_vmin,
                     color_vmax=resolved_color_vmax,
                     artifact_layout=artifact_layout,
+                    write_individual_projections=output_profile == "full",
                 )
             )
-            generated_files.update(
-                _write_3d_figure(
-                    source_display,
-                    rep_coordinates,
-                    output_path,
-                    coordinate_source=source,
-                    representation=rep,
-                    axis_names=axis_names,
-                    color_field=color_field,
-                    formats=normalized_formats,
-                    max_points_3d=max_points_3d,
-                    random_seed=random_seed,
-                    output_prefix=output_prefix,
-                    style_options=style_options,
-                    color_vmin=resolved_color_vmin,
-                    color_vmax=resolved_color_vmax,
-                    artifact_layout=artifact_layout,
+            if output_profile == "full":
+                generated_files.update(
+                    _write_3d_figure(
+                        source_display,
+                        rep_coordinates,
+                        output_path,
+                        coordinate_source=source,
+                        representation=rep,
+                        axis_names=axis_names,
+                        color_field=color_field,
+                        formats=normalized_formats,
+                        max_points_3d=max_points_3d,
+                        random_seed=random_seed,
+                        output_prefix=output_prefix,
+                        style_options=style_options,
+                        color_vmin=resolved_color_vmin,
+                        color_vmax=resolved_color_vmax,
+                        artifact_layout=artifact_layout,
+                    )
                 )
-            )
             if write_projection_csvs:
                 generated_files.update(
                     _write_projection_csvs(
@@ -341,15 +354,19 @@ def write_landscape_visualizations(
             generated_axis_direction_map.update(axis_map_files)
             generated_files.update(axis_map_files)
 
-    display_coordinates = (
-        pd.concat(display_tables, ignore_index=True)
-        if display_tables
-        else pd.DataFrame()
-    )
-    display_coordinates_name = display_table_filename or f"{output_prefix}display_coordinates.csv"
-    display_coordinates_path = output_path / display_coordinates_name
-    display_coordinates.to_csv(display_coordinates_path, index=False)
-    generated_files["display_coordinates_csv"] = str(display_coordinates_path)
+    display_coordinates_name = None
+    if output_profile == "full":
+        display_coordinates = (
+            pd.concat(display_tables, ignore_index=True)
+            if display_tables
+            else pd.DataFrame()
+        )
+        display_coordinates_name = (
+            display_table_filename or f"{output_prefix}display_coordinates.csv"
+        )
+        display_coordinates_path = output_path / display_coordinates_name
+        display_coordinates.to_csv(display_coordinates_path, index=False)
+        generated_files["display_coordinates_csv"] = str(display_coordinates_path)
 
     report = {
         "artifact_type": "visualization_report",
@@ -442,6 +459,7 @@ def write_landscape_visualizations(
         "display_coordinates_contains": "display_filtered_rows_only",
         "display_table_filename": display_coordinates_name,
         "artifact_layout": artifact_layout,
+        "output_profile": output_profile,
         "full_landscape_table": full_landscape_table,
         "figure_point_rasterized": True,
         "generated_histograms": generated_histograms,
@@ -450,12 +468,15 @@ def write_landscape_visualizations(
     }
     if selection_metadata is not None:
         report.update(dict(selection_metadata))
-    report_path = write_json_artifact(
-        report,
-        output_path / f"{output_prefix}visualization_report.json",
-        overwrite=overwrite,
-    )
-    report["report_path"] = str(report_path)
+    if output_profile == "full":
+        report_path = write_json_artifact(
+            report,
+            output_path / f"{output_prefix}visualization_report.json",
+            overwrite=overwrite,
+        )
+        report["report_path"] = str(report_path)
+    else:
+        report["report_path"] = None
     return report
 
 
@@ -769,11 +790,17 @@ def _expected_visualization_paths(
     generate_axis_direction_map: bool,
     artifact_layout: str,
     display_table_filename: str | None,
+    output_profile: str,
 ) -> list[Path]:
-    paths = [
-        output_dir / f"{output_prefix}visualization_report.json",
-        output_dir / (display_table_filename or f"{output_prefix}display_coordinates.csv"),
-    ]
+    paths = []
+    if output_profile == "full":
+        paths.extend(
+            [
+                output_dir / f"{output_prefix}visualization_report.json",
+                output_dir
+                / (display_table_filename or f"{output_prefix}display_coordinates.csv"),
+            ]
+        )
     for source in coordinate_sources:
         for rep in representations:
             for fmt in formats:
@@ -787,13 +814,14 @@ def _expected_visualization_paths(
                         artifact_layout=artifact_layout,
                     )
                 )
-                cloud_name = (
-                    f"landscape_3d_{rep}.{fmt}"
-                    if artifact_layout == "run_bundle"
-                    else f"{output_prefix}{source}_{rep}_cloud_3d.{fmt}"
-                )
-                paths.append(output_dir / cloud_name)
-                if artifact_layout == "run_bundle":
+                if output_profile == "full":
+                    cloud_name = (
+                        f"landscape_3d_{rep}.{fmt}"
+                        if artifact_layout == "run_bundle"
+                        else f"{output_prefix}{source}_{rep}_cloud_3d.{fmt}"
+                    )
+                    paths.append(output_dir / cloud_name)
+                if artifact_layout == "run_bundle" and output_profile == "full":
                     projections = EULER_PROJECTIONS if rep == "euler" else ROT_VECTOR_PROJECTIONS
                     for projection_name, _, _ in projections:
                         paths.append(
@@ -930,6 +958,7 @@ def _write_2d_figure(
     color_vmin: float | None,
     color_vmax: float | None,
     artifact_layout: str,
+    write_individual_projections: bool,
 ) -> dict[str, str]:
     import matplotlib
 
@@ -997,7 +1026,7 @@ def _write_2d_figure(
         figure.savefig(path)
         generated[f"{coordinate_source}_{representation}_projection_2d_{fmt}"] = str(path)
     plt.close(figure)
-    if artifact_layout == "run_bundle":
+    if artifact_layout == "run_bundle" and write_individual_projections:
         generated.update(
             _write_individual_projection_figures(
                 data,
@@ -1169,7 +1198,7 @@ def _triptych_figure_name(
     artifact_layout: str,
 ) -> str:
     if artifact_layout == "run_bundle":
-        return f"{representation}_3view_projection.{fmt}"
+        return f"{output_prefix}{representation}_3view_projection.{fmt}"
     return f"{output_prefix}{coordinate_source}_{representation}_projection_2d.{fmt}"
 
 

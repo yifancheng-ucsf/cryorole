@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -132,6 +134,27 @@ def test_array_native_canonicalization_large_smoke_keeps_ndarray_coordinates():
     assert report.n_fit_points == n_points
 
 
+def test_array_native_canonicalization_preserves_display_outlier_flags():
+    coordinates = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.0, 0.2, 0.0],
+            [0.0, 0.0, 0.3],
+        ]
+    )
+    arrays = _make_landscape_arrays(coordinates)
+    flags = np.array([False, True, False, True])
+    arrays = replace(arrays, sld_display_is_outlier=flags)
+
+    result, _report = canonicalize_landscape_arrays(
+        arrays,
+        policy=CanonicalizationPolicy(fit_subset="all"),
+    )
+
+    assert np.array_equal(result.sld_display_is_outlier, flags)
+
+
 def test_default_fit_subset_uses_sld_raw_not_sld_display():
     coordinates = np.array(
         [
@@ -239,7 +262,7 @@ def test_default_canonical_policy_uses_density_weighted_skewness():
 
     assert policy.axis_assignment == "pc123_to_alpha_beta_gamma"
     assert policy.sign_rule == "density_weighted_skewness"
-    assert policy.positive_side == "high_density_skew"
+    assert policy.positive_side == "low_density_skew"
     assert policy.sign_weight_field == "sld_raw"
 
 
@@ -334,7 +357,10 @@ def test_density_weighted_skewness_uses_sld_raw_not_sld_display():
 
     result = canonicalize_landscape(
         _make_landscape(coordinates, sld_raw=sld_raw, sld_display=sld_display),
-        policy=CanonicalizationPolicy(fit_subset="all"),
+        policy=CanonicalizationPolicy(
+            fit_subset="all",
+            positive_side="high_density_skew",
+        ),
     )
 
     assert result.canonicalization_report.sign_weight_field == "sld_raw"

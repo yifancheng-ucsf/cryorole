@@ -8,6 +8,8 @@ import pytest
 
 from cryorole.export.visualization import write_landscape_visualizations
 from cryorole.models.landscape import Landscape
+from cryorole.models.landscape_arrays import LandscapeArrays
+from cryorole.visualize import QuickLookRequest, write_quicklook
 
 
 def _make_landscape(*, canonical: bool = False, n_points: int = 3) -> Landscape:
@@ -67,6 +69,82 @@ def test_visualization_writes_display_table_figures_and_report(tmp_path) -> None
     assert payload["generated_files"]["display_coordinates_csv"] == str(
         tmp_path / "display_coordinates.csv"
     )
+
+
+def test_quicklook_service_writes_seven_flat_pngs(tmp_path) -> None:
+    landscape = _make_landscape(n_points=10)
+    landscape.data["sld_raw"] = [0.5, 0.8, 1.0, 1.0, 1.5, 3.0, 3.0, 4.0, 5.0, 150.0]
+    result = write_quicklook(
+        landscape,
+        QuickLookRequest(
+            output_dir=tmp_path,
+            euler_convention="extrinsic_zyx",
+            euler_convention_source="run_policy",
+            color_vmax=100.0,
+            tail_jump_threshold=5.0,
+        ),
+    )
+
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "all_euler_3view_projection.png",
+        "all_rotvec_3view_projection.png",
+        "sld_ge_1_euler_3view_projection.png",
+        "sld_ge_1_rotvec_3view_projection.png",
+        "top_40pct_euler_3view_projection.png",
+        "top_40pct_rotvec_3view_projection.png",
+        "sld_log_distribution.png",
+    }
+    assert result.report["output_profile"] == "quicklook"
+    assert result.report["report_path"] is None
+    assert result.report["subset_counts"] == {
+        "all": 10,
+        "sld_ge_1": 8,
+        "top_40pct": 5,
+    }
+    assert result.report["top_40pct_cutoff_sld"] == 3.0
+    assert result.report["sld_distribution"]["input_count"] == 10
+    assert result.report["sld_distribution"]["p99_sld_raw"] > 5.0
+    assert result.report["sld_distribution"]["tail_jump_threshold"] == 5.0
+    assert len(result.report["generated_files"]) == 7
+
+
+def test_quicklook_filters_full_arrays_before_sampling(tmp_path) -> None:
+    n_points = 10
+    sld = np.arange(1, n_points + 1, dtype=float)
+    arrays = LandscapeArrays(
+        particle_key=np.asarray([f"p{i}" for i in range(n_points)]),
+        coordinates_analysis=np.column_stack((sld / 100.0, sld / 200.0, sld / 300.0)),
+        coordinates_display=None,
+        sld_unfloored=sld,
+        sld_raw=sld,
+        sld_display=sld,
+        sld_was_floored=np.zeros(n_points, dtype=bool),
+        sld_local_k_mean=np.ones(n_points),
+        sld_effective_local_k_mean=np.ones(n_points),
+        sld_distance_floor=np.full(n_points, 1e-4),
+    )
+
+    result = write_quicklook(
+        arrays,
+        QuickLookRequest(
+            output_dir=tmp_path,
+            euler_convention="extrinsic_zyx",
+            euler_convention_source="run_policy",
+            max_points_2d=3,
+        ),
+    )
+
+    assert result.report["subset_counts"] == {
+        "all": 10,
+        "sld_ge_1": 10,
+        "top_40pct": 4,
+    }
+    assert result.report["rendered_subset_counts"] == {
+        "all": 3,
+        "sld_ge_1": 3,
+        "top_40pct": 3,
+    }
+    assert result.report["sld_distribution"]["input_count"] == 10
 
 
 def test_visualization_records_explicit_intrinsic_euler_convention(tmp_path) -> None:

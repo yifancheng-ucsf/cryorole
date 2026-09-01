@@ -40,6 +40,18 @@ def relion_passive_euler_to_active_matrix(
     return passive_matrix.T
 
 
+def relion_passive_euler_to_active_matrices(angles: np.ndarray) -> np.ndarray:
+    """Vectorized RELION passive intrinsic-ZYZ to internal active matrices."""
+
+    values = np.asarray(angles, dtype=float)
+    if values.ndim != 2 or values.shape[1] != 3:
+        raise ValueError("RELION Euler angles must have shape (n, 3)")
+    if not np.isfinite(values).all():
+        raise ValueError("RELION Euler angles contain non-finite values")
+    passive = Rotation.from_euler("ZYZ", values, degrees=True).as_matrix()
+    return np.swapaxes(passive, 1, 2)
+
+
 class ConventionResolver:
     """Resolve source pose conventions into internal active matrices.
 
@@ -79,3 +91,8 @@ class ConventionResolver:
         """Convert source Euler angles to an internal active matrix."""
 
         return relion_passive_euler_to_active_matrix(rot, tilt, psi)
+
+    def euler_to_active_matrices(self, angles: np.ndarray) -> np.ndarray:
+        """Convert a batch while preserving the same centralized convention bridge."""
+
+        return relion_passive_euler_to_active_matrices(angles)

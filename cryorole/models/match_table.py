@@ -36,4 +36,8 @@ class MatchReport:
     dropped_ref_only_count: int = 0
     dropped_mov_only_count: int = 0
     matched_rows_reordered: bool = False
+    ref_coverage: float = 0.0
+    mov_coverage: float = 0.0
+    overlap_smaller_input: float = 0.0
+    low_overlap_allowed: bool = False
     warnings: tuple[str, ...] = ()

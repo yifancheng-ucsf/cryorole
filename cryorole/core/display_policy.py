@@ -45,6 +45,22 @@ class ColorScale:
     vmax_source: str
 
 
+def max_displayed_density(
+    values,
+    *,
+    threshold: float | None = None,
+    strict_threshold: bool = False,
+) -> float | None:
+    """Return the finite maximum after applying a display-only threshold."""
+
+    density = np.asarray(values, dtype=float)
+    mask = np.isfinite(density)
+    if threshold is not None:
+        mask &= density > threshold if strict_threshold else density >= threshold
+    displayed = density[mask]
+    return float(np.max(displayed)) if displayed.size else None
+
+
 def resolve_display_indices(
     values,
     *,
@@ -74,8 +90,9 @@ def resolve_display_indices(
         selected = selected[density >= float(threshold)]
     if top_fraction is not None and selected.size:
         count = max(1, int(math.ceil(selected.size * float(top_fraction))))
-        order = np.argsort(density[selected], kind="mergesort")
-        selected = np.sort(selected[order[-count:]])
+        ranked = np.sort(density[selected], kind="mergesort")
+        cutoff = float(ranked[-count])
+        selected = selected[density[selected] >= cutoff]
 
     bounds = dict(range_bounds or {})
     for axis, axis_bounds in bounds.items():

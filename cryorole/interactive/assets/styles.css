@@ -1,0 +1,20 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; background: #f4f6f8; color: #17202a; }
+body { margin: 0; }
+header { display: flex; justify-content: space-between; padding: 14px 20px; background: #17202a; color: white; }
+main { padding: 16px; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; background: white; padding: 12px; border-radius: 8px; }
+label { display: grid; gap: 4px; font-size: 13px; }
+input, select, button { padding: 7px; }
+button { cursor: pointer; border: 1px solid #557; border-radius: 5px; background: #fff; }
+button.scientific { background: #7b2cbf; color: #fff; font-weight: 650; }
+.notice { margin: 12px 0; padding: 10px; background: #fff3cd; border-left: 4px solid #d6a500; }
+.summary { margin: 10px 0; font-weight: 600; }
+.readout { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 8px; margin: 10px 0; }
+.readout div { background: white; border-left: 4px solid #277da1; padding: 9px; font-family: ui-monospace, monospace; font-size: 12px; }
+.plots { display: grid; grid-template-columns: repeat(3, minmax(280px, 1fr)); gap: 10px; }
+figure { margin: 0; background: white; padding: 8px; border-radius: 8px; }
+canvas { width: 100%; height: auto; background: #fbfbfc; border: 1px solid #ccd; }
+figcaption { text-align: center; }
+pre { white-space: pre-wrap; background: #17202a; color: #e8f1f2; padding: 12px; border-radius: 6px; }
+#spaceBadge { background: #2a9d8f; padding: 3px 8px; border-radius: 10px; margin-left: 8px; }
+@media (max-width: 1000px) { .plots, .readout { grid-template-columns: 1fr; } }

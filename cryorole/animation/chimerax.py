@@ -9,6 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 
@@ -80,8 +81,8 @@ def generate_chimerax_scripts(
     output_dir: str | Path,
     session_path: str | Path,
     transform_csv: str | Path,
-    reference_model_id: str,
-    moving_model_id: str,
+    reference_model_id: str | Sequence[str],
+    moving_model_id: str | Sequence[str],
     structure_width: int,
     structure_height: int,
     view_name: str | None = None,
@@ -95,14 +96,14 @@ def generate_chimerax_scripts(
         raise ValueError(f"ChimeraX session does not exist: {session}")
     if not transforms.is_file():
         raise ValueError(f"Scene transform artifact does not exist: {transforms}")
-    reference = _normalize_model_id(reference_model_id)
-    moving = _normalize_model_id(moving_model_id)
-    if reference == moving:
-        raise ValueError("reference and moving ChimeraX model IDs must differ")
+    reference_ids, moving_ids = normalize_model_id_groups(
+        reference_model_id,
+        moving_model_id,
+    )
     if structure_width <= 0 or structure_height <= 0:
         raise ValueError("structure frame dimensions must be positive")
-    if view_name not in {None, "primary", "secondary"}:
-        raise ValueError("view_name must be primary, secondary, or None")
+    if view_name not in {None, "primary", "secondary", "tertiary"}:
+        raise ValueError("view_name must be primary, secondary, tertiary, or None")
     script_dir = root / "chimerax" / view_name if view_name else root / "chimerax"
     structure_dir = (
         root / "frames" / "structure" / view_name
@@ -121,8 +122,8 @@ def generate_chimerax_scripts(
         "session_path": str(session),
         "transform_csv": str(transforms),
         "structure_dir": str(structure_dir.resolve()),
-        "reference_model_id": reference,
-        "moving_model_id": moving,
+        "reference_model_ids": reference_ids,
+        "moving_model_ids": moving_ids,
         "structure_width": int(structure_width),
         "structure_height": int(structure_height),
         "status_path": str(status_path.resolve()),
@@ -204,6 +205,8 @@ def validate_chimerax_completion(
     path: str | Path,
     *,
     expected_count: int,
+    expected_reference_model_ids: str | Sequence[str] | None = None,
+    expected_moving_model_ids: str | Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Require explicit renderer completion independent of the process return code."""
 
@@ -230,49 +233,115 @@ def validate_chimerax_completion(
         raise RuntimeError("ChimeraX renderer did not confirm unchanged reference transform")
     if payload.get("moving_restored") is not True:
         raise RuntimeError("ChimeraX renderer did not confirm moving-transform restoration")
+    if expected_reference_model_ids is not None or expected_moving_model_ids is not None:
+        reference_ids, moving_ids = normalize_model_id_groups(
+            expected_reference_model_ids or (),
+            expected_moving_model_ids or (),
+        )
+        strict_groups = (
+            len(reference_ids) > 1
+            or len(moving_ids) > 1
+            or "reference_model_ids" in payload
+            or "moving_model_ids" in payload
+        )
+        if strict_groups:
+            _validate_completion_model_group(
+                payload,
+                group_name="reference",
+                expected_ids=reference_ids,
+                result_field="reference_unchanged_by_model",
+            )
+            _validate_completion_model_group(
+                payload,
+                group_name="moving",
+                expected_ids=moving_ids,
+                result_field="moving_restored_by_model",
+            )
+            if payload.get("stationary_unchanged") is not True:
+                raise RuntimeError(
+                    "ChimeraX renderer did not confirm unchanged stationary transforms"
+                )
+            stationary_checks = payload.get("stationary_unchanged_by_model")
+            if not isinstance(stationary_checks, dict) or not all(
+                value is True for value in stationary_checks.values()
+            ):
+                raise RuntimeError(
+                    "ChimeraX renderer did not confirm every stationary model transform"
+                )
+            if not set(reference_ids).issubset(map(str, stationary_checks)):
+                raise RuntimeError(
+                    "ChimeraX renderer stationary checks omit a reference model"
+                )
+            relative_checks = payload.get("moving_group_relative_transform_checks")
+            expected_relative_checks = len(moving_ids) * (len(moving_ids) - 1) // 2
+            if (
+                not isinstance(relative_checks, dict)
+                or len(relative_checks) != expected_relative_checks
+                or not all(value is True for value in relative_checks.values())
+            ):
+                raise RuntimeError(
+                    "ChimeraX renderer did not validate every moving-group relative transform"
+                )
+            if payload.get("moving_group_relative_transforms_preserved") is not True:
+                raise RuntimeError(
+                    "ChimeraX renderer did not preserve moving-group relative transforms"
+                )
     return payload
 
 
 def validate_matching_session_baselines(
     primary: dict[str, object],
     secondary: dict[str, object],
+    tertiary: dict[str, object] | None = None,
     *,
     atol: float = 1e-8,
 ) -> dict[str, object]:
-    """Require both dual-view sessions to start from identical model transforms."""
+    """Require all requested sessions to start from identical model transforms."""
 
     if not np.isfinite(atol) or atol <= 0:
         raise ValueError("session baseline comparison tolerance must be positive")
+    comparisons = [("secondary", secondary)]
+    if tertiary is not None:
+        comparisons.append(("tertiary", tertiary))
+    primary_groups = _completion_baseline_groups(primary)
     differences: dict[str, float] = {}
-    for name in ("reference_baseline_matrix", "moving_baseline_matrix"):
-        try:
-            primary_matrix = np.asarray(primary[name], dtype=float)
-            secondary_matrix = np.asarray(secondary[name], dtype=float)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"ChimeraX completion artifacts do not contain valid {name}"
-            ) from exc
-        if (
-            primary_matrix.shape != (3, 4)
-            or secondary_matrix.shape != (3, 4)
-            or not np.isfinite(primary_matrix).all()
-            or not np.isfinite(secondary_matrix).all()
-        ):
-            raise RuntimeError(
-                f"ChimeraX completion artifacts do not contain valid {name}"
-            )
-        difference = float(np.max(np.abs(primary_matrix - secondary_matrix)))
-        differences[name] = difference
-        if not np.allclose(primary_matrix, secondary_matrix, rtol=0.0, atol=atol):
-            raise RuntimeError(
-                "Dual ChimeraX session initial scene transforms differ "
-                f"for {name}"
-            )
+    per_view_differences: dict[str, dict[str, float]] = {}
+    for view_name, candidate in comparisons:
+        candidate_groups = _completion_baseline_groups(candidate)
+        view_differences: dict[str, float] = {}
+        for group_name in ("reference", "moving"):
+            primary_group = primary_groups[group_name]
+            candidate_group = candidate_groups[group_name]
+            if tuple(primary_group) != tuple(candidate_group):
+                raise RuntimeError(
+                    f"{view_name} ChimeraX session {group_name} model IDs differ"
+                )
+            for model_id, primary_matrix in primary_group.items():
+                candidate_matrix = candidate_group[model_id]
+                name = f"{group_name} model #{model_id}"
+                difference = float(np.max(np.abs(primary_matrix - candidate_matrix)))
+                view_differences[name] = difference
+                differences[name] = max(differences.get(name, 0.0), difference)
+                if not np.allclose(
+                    primary_matrix,
+                    candidate_matrix,
+                    rtol=0.0,
+                    atol=atol,
+                ):
+                    raise RuntimeError(
+                        f"{view_name} ChimeraX session initial scene transforms differ "
+                        f"for {name}"
+                    )
+        per_view_differences[view_name] = view_differences
     return {
         "status": "validated",
         "matched": True,
+        "view_count": len(comparisons) + 1,
         "absolute_tolerance": float(atol),
         "maximum_absolute_differences": differences,
+        "per_view_maximum_absolute_differences": per_view_differences,
+        "reference_model_ids": list(primary_groups["reference"]),
+        "moving_model_ids": list(primary_groups["moving"]),
     }
 
 
@@ -324,6 +393,98 @@ def _normalize_model_id(value: str) -> str:
     return normalized
 
 
+def normalize_model_id_groups(
+    reference_model_ids: str | Sequence[str],
+    moving_model_ids: str | Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Normalize exact ChimeraX IDs and validate disjoint rigid groups."""
+
+    reference = _normalize_model_id_group(reference_model_ids, "reference")
+    moving = _normalize_model_id_group(moving_model_ids, "moving")
+    overlap = set(reference).intersection(moving)
+    if overlap:
+        joined = ", ".join(f"#{model_id}" for model_id in sorted(overlap))
+        raise ValueError(f"model IDs cannot be both reference and moving: {joined}")
+    return reference, moving
+
+
+def _normalize_model_id_group(
+    values: str | Sequence[str],
+    group_name: str,
+) -> tuple[str, ...]:
+    items = (values,) if isinstance(values, str) else tuple(values)
+    if not items:
+        raise ValueError(f"at least one {group_name} ChimeraX model ID is required")
+    normalized = tuple(_normalize_model_id(value) for value in items)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"duplicate {group_name} ChimeraX model IDs are not allowed")
+    return normalized
+
+
+def _validate_completion_model_group(
+    payload: dict[str, object],
+    *,
+    group_name: str,
+    expected_ids: tuple[str, ...],
+    result_field: str,
+) -> None:
+    recorded_ids = payload.get(f"{group_name}_model_ids")
+    if recorded_ids != list(expected_ids):
+        raise RuntimeError(
+            f"ChimeraX renderer {group_name} model IDs do not match the request"
+        )
+    baselines = payload.get(f"{group_name}_baseline_matrices")
+    if not isinstance(baselines, dict) or tuple(baselines) != expected_ids:
+        raise RuntimeError(
+            f"ChimeraX renderer did not record every {group_name} model baseline"
+        )
+    for model_id, matrix in baselines.items():
+        values = np.asarray(matrix, dtype=float)
+        if values.shape != (3, 4) or not np.isfinite(values).all():
+            raise RuntimeError(
+                f"ChimeraX renderer recorded an invalid {group_name} model #{model_id} baseline"
+            )
+    results = payload.get(result_field)
+    if not isinstance(results, dict) or tuple(results) != expected_ids:
+        raise RuntimeError(
+            f"ChimeraX renderer did not check every {group_name} model"
+        )
+    failed = [model_id for model_id, value in results.items() if value is not True]
+    if failed:
+        raise RuntimeError(
+            f"ChimeraX renderer check failed for {group_name} model #{failed[0]}"
+        )
+
+
+def _completion_baseline_groups(
+    payload: dict[str, object],
+) -> dict[str, dict[str, np.ndarray]]:
+    groups: dict[str, dict[str, np.ndarray]] = {}
+    for group_name in ("reference", "moving"):
+        plural = payload.get(f"{group_name}_baseline_matrices")
+        if plural is None:
+            plural = {"legacy": payload.get(f"{group_name}_baseline_matrix")}
+        if not isinstance(plural, dict) or not plural:
+            raise RuntimeError(
+                f"ChimeraX completion artifacts do not contain valid {group_name} baselines"
+            )
+        matrices: dict[str, np.ndarray] = {}
+        for model_id, matrix in plural.items():
+            try:
+                values = np.asarray(matrix, dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"ChimeraX completion artifacts do not contain valid {group_name} baselines"
+                ) from exc
+            if values.shape != (3, 4) or not np.isfinite(values).all():
+                raise RuntimeError(
+                    f"ChimeraX completion artifacts do not contain valid {group_name} baselines"
+                )
+            matrices[str(model_id)] = values
+        groups[group_name] = matrices
+    return groups
+
+
 def _quote_cxc_path(path: Path) -> str:
     return '"' + str(path).replace("\\", "/").replace('"', '\\"') + '"'
 
@@ -343,8 +504,18 @@ from chimerax.geometry import Place
 CONFIG = json.loads({config_json!r})
 STATE = {{
     "frame_count": 0,
+    "reference_model_ids": list(CONFIG["reference_model_ids"]),
+    "moving_model_ids": list(CONFIG["moving_model_ids"]),
+    "reference_baseline_matrices": {{}},
+    "moving_baseline_matrices": {{}},
+    "reference_unchanged_by_model": {{}},
+    "stationary_unchanged_by_model": {{}},
+    "moving_restored_by_model": {{}},
+    "moving_group_relative_transform_checks": {{}},
     "reference_unchanged": False,
+    "stationary_unchanged": False,
     "moving_restored": False,
+    "moving_group_relative_transforms_preserved": False,
 }}
 
 
@@ -364,6 +535,61 @@ def exact_model(model_id):
             "Expected exactly one model with id #{{}}, available={{}}".format(requested, available)
         )
     return matches[0]
+
+
+def ancestor_in_group(model, object_ids):
+    parent = getattr(model, "parent", None)
+    while parent is not None:
+        if id(parent) in object_ids:
+            return parent
+        parent = getattr(parent, "parent", None)
+    return None
+
+
+def baseline_entries(models):
+    return [
+        (
+            model,
+            model.scene_position,
+            np.asarray(model.scene_position.matrix, dtype=float).copy(),
+        )
+        for model in models
+    ]
+
+
+def unchanged_by_model(entries):
+    return {{
+        model.id_string: bool(np.allclose(model.scene_position.matrix, matrix))
+        for model, _place, matrix in entries
+    }}
+
+
+def affine_matrix(place):
+    matrix = np.asarray(place.matrix, dtype=float)
+    affine = np.eye(4, dtype=float)
+    affine[:3, :] = matrix
+    return affine
+
+
+def relative_matrices(entries):
+    result = {{}}
+    for left_index, (left, left_place, _left_matrix) in enumerate(entries):
+        for right, right_place, _right_matrix in entries[left_index + 1:]:
+            key = "#{{}} -> #{{}}".format(left.id_string, right.id_string)
+            result[key] = np.linalg.inv(affine_matrix(left_place)) @ affine_matrix(right_place)
+    return result
+
+
+def relative_transform_checks(entries, baselines):
+    current_entries = [
+        (model, model.scene_position, matrix)
+        for model, _place, matrix in entries
+    ]
+    current = relative_matrices(current_entries)
+    return {{
+        key: bool(np.allclose(current[key], baseline))
+        for key, baseline in baselines.items()
+    }}
 
 
 def read_transforms(path):
@@ -388,21 +614,53 @@ def write_status(payload):
 
 
 def render():
-    moving = None
-    moving_baseline = None
+    moving_baselines = []
     run(session, "open " + quote_command_path(CONFIG["session_path"]))
-    reference = exact_model(CONFIG["reference_model_id"])
-    moving = exact_model(CONFIG["moving_model_id"])
-    if reference is moving:
-        raise RuntimeError("reference and moving model IDs resolve to the same model")
-    reference_baseline = reference.scene_position
-    moving_baseline = moving.scene_position
-    STATE["reference_baseline_matrix"] = np.asarray(
-        reference_baseline.matrix, dtype=float
-    ).tolist()
-    STATE["moving_baseline_matrix"] = np.asarray(
-        moving_baseline.matrix, dtype=float
-    ).tolist()
+    references = [exact_model(model_id) for model_id in CONFIG["reference_model_ids"]]
+    movings = [exact_model(model_id) for model_id in CONFIG["moving_model_ids"]]
+    if set(map(id, references)).intersection(map(id, movings)):
+        raise RuntimeError("reference and moving model IDs resolve to overlapping models")
+    reference_baselines = baseline_entries(references)
+    moving_baselines = baseline_entries(movings)
+    moving_object_ids = set(map(id, movings))
+    for moving in movings:
+        ancestor = ancestor_in_group(moving, moving_object_ids)
+        if ancestor is not None:
+            raise RuntimeError(
+                "moving model IDs cannot include both parent #{{}} and descendant #{{}}".format(
+                    ancestor.id_string, moving.id_string
+                )
+            )
+    for reference in references:
+        ancestor = ancestor_in_group(reference, moving_object_ids)
+        if ancestor is not None:
+            raise RuntimeError(
+                "reference model #{{}} cannot be a descendant of moving model #{{}}".format(
+                    reference.id_string, ancestor.id_string
+                )
+            )
+    stationary_baselines = baseline_entries([
+        model for model in session.models.list()
+        if (
+            hasattr(model, "scene_position")
+            and id(model) not in moving_object_ids
+            and ancestor_in_group(model, moving_object_ids) is None
+        )
+    ])
+    moving_relative_baselines = relative_matrices(moving_baselines)
+    STATE["reference_baseline_matrices"] = {{
+        model.id_string: matrix.tolist()
+        for model, _place, matrix in reference_baselines
+    }}
+    STATE["moving_baseline_matrices"] = {{
+        model.id_string: matrix.tolist()
+        for model, _place, matrix in moving_baselines
+    }}
+    if len(reference_baselines) == 1:
+        STATE["reference_baseline_matrix"] = reference_baselines[0][2].tolist()
+    if len(moving_baselines) == 1:
+        STATE["moving_baseline_matrix"] = moving_baselines[0][2].tolist()
+    STATE["moving_group_relative_transforms_preserved"] = True
     output_dir = Path(CONFIG["structure_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -412,7 +670,8 @@ def render():
     try:
         for frame_index, matrix in enumerate(read_transforms(CONFIG["transform_csv"])):
             delta_place = Place(matrix=matrix)
-            moving.scene_position = delta_place * moving_baseline
+            for moving, moving_baseline, _matrix in moving_baselines:
+                moving.scene_position = delta_place * moving_baseline
             output_path = output_dir / "frame_{{:06d}}.png".format(frame_index)
             run(
                 session,
@@ -423,21 +682,39 @@ def render():
                 ),
             )
             STATE["frame_count"] = frame_index + 1
-            if not np.allclose(reference.scene_position.matrix, reference_baseline.matrix):
-                raise RuntimeError("reference scene transform changed during rendering")
-        STATE["reference_unchanged"] = bool(
-            np.allclose(reference.scene_position.matrix, reference_baseline.matrix)
-        )
-    finally:
-        if moving is not None and moving_baseline is not None:
-            moving.scene_position = moving_baseline
-            STATE["moving_restored"] = bool(
-                np.allclose(moving.scene_position.matrix, moving_baseline.matrix)
+            STATE["reference_unchanged_by_model"] = unchanged_by_model(reference_baselines)
+            STATE["stationary_unchanged_by_model"] = unchanged_by_model(stationary_baselines)
+            STATE["moving_group_relative_transform_checks"] = relative_transform_checks(
+                moving_baselines, moving_relative_baselines
             )
+            STATE["reference_unchanged"] = bool(
+                all(STATE["reference_unchanged_by_model"].values())
+            )
+            STATE["stationary_unchanged"] = bool(
+                all(STATE["stationary_unchanged_by_model"].values())
+            )
+            if not STATE["reference_unchanged"]:
+                raise RuntimeError("reference scene transform changed during rendering")
+            if not STATE["stationary_unchanged"]:
+                raise RuntimeError("an undeclared stationary scene transform changed during rendering")
+            if not all(STATE["moving_group_relative_transform_checks"].values()):
+                STATE["moving_group_relative_transforms_preserved"] = False
+                raise RuntimeError("moving-group relative transforms changed during rendering")
+    finally:
+        for moving, moving_baseline, _matrix in moving_baselines:
+            moving.scene_position = moving_baseline
+        STATE["moving_restored_by_model"] = unchanged_by_model(moving_baselines)
+        STATE["moving_restored"] = bool(
+            moving_baselines and all(STATE["moving_restored_by_model"].values())
+        )
     if not STATE["reference_unchanged"]:
         raise RuntimeError("reference scene transform changed during rendering")
+    if not STATE["stationary_unchanged"]:
+        raise RuntimeError("an undeclared stationary scene transform changed during rendering")
     if not STATE["moving_restored"]:
         raise RuntimeError("moving scene transform was not restored")
+    if not STATE["moving_group_relative_transforms_preserved"]:
+        raise RuntimeError("moving-group relative transforms were not preserved")
 
 
 try:

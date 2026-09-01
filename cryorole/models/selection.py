@@ -16,6 +16,9 @@ class Selection:
 
     selection_id: str
     parent_landscape_id: str | None
+    parent_run_id: str | None = None
+    created_at: str | None = None
+    interaction_provenance: Mapping[str, object] = field(default_factory=dict)
     parent_landscape_metadata: Mapping[str, object] = field(default_factory=dict)
     selection_mode: str = "top_fraction_by_density"
     selection_basis: str = "density:sld_raw"

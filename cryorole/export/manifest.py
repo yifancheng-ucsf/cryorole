@@ -30,6 +30,8 @@ def write_run_manifest(
     additional_reports: Mapping[str, Any] | None = None,
     additional_results: Mapping[str, Any] | None = None,
     output_artifacts: Mapping[str, Any] | None = None,
+    run_id: str | None = None,
+    source_identities: Mapping[str, Any] | None = None,
 ) -> ManifestReport:
     """Write a non-destructive JSON manifest for a full or partial workflow."""
 
@@ -60,6 +62,8 @@ def write_run_manifest(
         additional_reports=additional_reports,
         additional_results=additional_results,
         output_artifacts=output_artifacts,
+        run_id=run_id,
+        source_identities=source_identities,
     )
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(to_json_safe(manifest), handle, indent=2, sort_keys=True)
@@ -92,6 +96,8 @@ def build_run_manifest_payload(
     additional_reports: Mapping[str, Any] | None = None,
     additional_results: Mapping[str, Any] | None = None,
     output_artifacts: Mapping[str, Any] | None = None,
+    run_id: str | None = None,
+    source_identities: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-safe manifest payload without writing it."""
 
@@ -131,6 +137,8 @@ def build_run_manifest_payload(
         "cryorole_version": __version__,
         "workflow_name": policy.workflow_name,
         "command": policy.command,
+        "run_id": run_id,
+        "source_identities": to_json_safe(source_identities or {}),
         "input_provenance": input_provenance,
         "active_policies": to_json_safe(active_policies or {}),
         "reports": reports,
@@ -191,6 +199,7 @@ def _selection_summary(selection: Any, *, policy: RunManifestPolicy) -> Any:
     summary = {
         "selection_id": safe_selection.get("selection_id"),
         "parent_landscape_id": safe_selection.get("parent_landscape_id"),
+        "parent_run_id": safe_selection.get("parent_run_id"),
         "selection_mode": safe_selection.get("selection_mode"),
         "selection_basis": safe_selection.get("selection_basis"),
         "metric": safe_selection.get("metric"),

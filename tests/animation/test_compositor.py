@@ -85,7 +85,7 @@ def test_stacked_layout_is_structure_first_fixed_and_uses_64_36_regions():
     )
 
     assert layout.name == "stacked"
-    assert layout.layout_version == "4"
+    assert layout.layout_version == "6"
     assert layout.structure_fraction == pytest.approx(0.64)
     assert layout.landscape_fraction == pytest.approx(0.36)
     assert layout.structure_region[0] == layout.landscape_region[0] == 24
@@ -168,6 +168,114 @@ def test_dual_structure_view_rejects_side_by_side():
         )
 
 
+def test_three_view_stacked_layout_has_equal_fixed_regions_and_inward_crop():
+    layout = resolve_composite_layout(
+        canvas_size=(1920, 1080),
+        landscape_dimensions=(1800, 600),
+        structure_dimensions=(900, 900),
+        secondary_structure_dimensions=(900, 900),
+        tertiary_structure_dimensions=(900, 900),
+        layout_name="stacked",
+        background_color="#ffffff",
+        dual_structure_horizontal_crop=0.17,
+        structure_vertical_crop=0.15,
+    )
+
+    regions = (
+        layout.primary_structure_region,
+        layout.secondary_structure_region,
+        layout.tertiary_structure_region,
+    )
+    destinations = (
+        layout.primary_structure_destination,
+        layout.secondary_structure_destination,
+        layout.tertiary_structure_destination,
+    )
+    assert layout.structure_view_count == 3
+    assert layout.structure_fraction == pytest.approx(0.58)
+    assert layout.landscape_fraction == pytest.approx(0.42)
+    assert all(region is not None for region in regions)
+    assert len({region[2] for region in regions}) == 1
+    assert regions[1][0] - (regions[0][0] + regions[0][2]) == layout.structure_view_gap_pixels
+    assert regions[2][0] - (regions[1][0] + regions[1][2]) == layout.structure_view_gap_pixels
+    assert layout.structure_view_gap_pixels <= 1920 * 0.015
+    assert all(destination is not None for destination in destinations)
+    assert layout.primary_structure_alignment == "right"
+    assert layout.secondary_structure_alignment == "center"
+    assert layout.tertiary_structure_alignment == "left"
+    assert layout.tertiary_structure_source_crop == (153, 135, 747, 765)
+    assert layout.tertiary_structure_cropped_dimensions == (594, 630)
+    assert layout.structure_horizontal_crop_fraction == pytest.approx(0.17)
+    assert layout.structure_vertical_crop_fraction == pytest.approx(0.15)
+
+
+def test_tertiary_structure_requires_secondary_and_stacked_layout():
+    with pytest.raises(ValueError, match="tertiary.*secondary"):
+        resolve_composite_layout(
+            canvas_size=(1920, 1080),
+            landscape_dimensions=(1800, 600),
+            structure_dimensions=(900, 900),
+            tertiary_structure_dimensions=(900, 900),
+            layout_name="stacked",
+            background_color="#ffffff",
+        )
+    with pytest.raises(ValueError, match="multiple structure views.*stacked"):
+        resolve_composite_layout(
+            canvas_size=(1920, 1080),
+            landscape_dimensions=(1800, 600),
+            structure_dimensions=(900, 900),
+            secondary_structure_dimensions=(900, 900),
+            tertiary_structure_dimensions=(900, 900),
+            layout_name="side_by_side",
+            background_color="#ffffff",
+        )
+
+
+def test_three_view_composition_preserves_sources_and_uses_fixed_geometry(tmp_path):
+    landscape = _write_frames(
+        tmp_path / "landscape", count=2, size=(300, 100), color=(255, 0, 0)
+    )
+    primary = _write_frames(
+        tmp_path / "primary", count=2, size=(120, 84), color=(0, 0, 255)
+    )
+    secondary = _write_frames(
+        tmp_path / "secondary", count=2, size=(120, 84), color=(0, 255, 0)
+    )
+    tertiary = _write_frames(
+        tmp_path / "tertiary", count=2, size=(120, 84), color=(255, 0, 255)
+    )
+    sources = landscape + primary + secondary + tertiary
+    before = {path: path.read_bytes() for path in sources}
+
+    result = compose_frame_sequences(
+        landscape_dir=tmp_path / "landscape",
+        structure_dir=tmp_path / "primary",
+        secondary_structure_dir=tmp_path / "secondary",
+        tertiary_structure_dir=tmp_path / "tertiary",
+        output_dir=tmp_path / "composite",
+        expected_count=2,
+        canvas_size=(1920, 1080),
+        layout_name="stacked",
+        background_color="#ffffff",
+        dual_structure_horizontal_crop=0.1,
+        structure_vertical_crop=0.1,
+    )
+
+    assert result.tertiary_structure_validation is not None
+    assert result.layout.tertiary_structure_source_crop == (12, 8, 108, 76)
+    assert all(path.read_bytes() == before[path] for path in sources)
+    with Image.open(result.paths[0]) as image:
+        expected_colors = ((0, 0, 255), (0, 255, 0), (255, 0, 255))
+        destinations = (
+            result.layout.primary_structure_destination,
+            result.layout.secondary_structure_destination,
+            result.layout.tertiary_structure_destination,
+        )
+        for destination, color in zip(destinations, expected_colors):
+            x, y, width, height = destination
+            assert image.getpixel((x + width // 2, y + height // 2)) == color
+
+
 @pytest.mark.parametrize(
     "fraction",
     [-0.01, 0.5, 1.0, float("nan"), float("inf"), float("-inf")],
@@ -178,6 +286,23 @@ def test_dual_structure_horizontal_crop_rejects_invalid_fraction(fraction):
             fraction,
             has_secondary=True,
             layout_name="stacked",
+        )
+
+
+@pytest.mark.parametrize(
+    "fraction",
+    [-0.01, 0.5, 1.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_structure_vertical_crop_rejects_invalid_fraction(fraction):
+    with pytest.raises(ValueError, match="vertical.*finite.*0 <=.*< 0.5"):
+        resolve_composite_layout(
+            canvas_size=(1920, 1080),
+            landscape_dimensions=(1800, 600),
+            structure_dimensions=(900, 900),
+            secondary_structure_dimensions=(900, 900),
+            layout_name="stacked",
+            background_color="#ffffff",
+            structure_vertical_crop=fraction,
         )
 
 

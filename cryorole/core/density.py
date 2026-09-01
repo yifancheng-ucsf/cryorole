@@ -14,6 +14,7 @@ from scipy.spatial.transform import Rotation
 
 from cryorole.models.density_report import DensityReport
 from cryorole.models.landscape import Landscape
+from cryorole.models.landscape_arrays import LandscapeArrays
 from cryorole.models.policies import DensityPolicy
 from cryorole.models.ro_result import ROResult
 
@@ -124,7 +125,11 @@ def compute_sld_values(
 
     k = min(k_neighbors, n_points - 1)
     if sld_metric == "rotvec_euclidean":
-        local_k_mean = _rotvec_euclidean_local_k_mean(coords, k=k)
+        local_k_mean = _rotvec_euclidean_local_k_mean(
+            coords,
+            k=k,
+            query_batch_size=query_batch_size,
+        )
     else:
         local_k_mean = _so3_geodesic_local_k_mean(
             coords,
@@ -157,13 +162,26 @@ def compute_sld_values(
     }
 
 
-def _rotvec_euclidean_local_k_mean(coords: np.ndarray, *, k: int) -> np.ndarray:
-    """Preserve the original RV-Euclidean kNN implementation."""
+def _rotvec_euclidean_local_k_mean(
+    coords: np.ndarray,
+    *,
+    k: int,
+    query_batch_size: int,
+) -> np.ndarray:
+    """Query RV-Euclidean neighbors in bounded batches."""
 
     tree = cKDTree(coords)
-    distances, _ = tree.query(coords, k=k + 1)
-    neighbor_distances = distances[:, 1:]
-    return np.mean(neighbor_distances, axis=1)
+    max_batch = max(1, _MAX_KNN_QUERY_ELEMENTS // max(k + 1, 1))
+    batch_size = min(query_batch_size, max_batch)
+    local_k_mean = np.empty(len(coords), dtype=float)
+    for start in range(0, len(coords), batch_size):
+        stop = min(start + batch_size, len(coords))
+        distances, _ = tree.query(coords[start:stop], k=k + 1)
+        distances = np.asarray(distances, dtype=float)
+        if distances.ndim == 1:
+            distances = distances.reshape(stop - start, -1)
+        local_k_mean[start:stop] = np.mean(distances[:, 1:], axis=1)
+    return local_k_mean
 
 
 def _so3_geodesic_local_k_mean(
@@ -431,11 +449,27 @@ def _build_density_report(
         coordinates_analysis,
         tolerance_rad=near_duplicate_coordinate_tolerance_rad,
     )
+    n_points = len(data)
+    n_floored = len(floored)
+    high_sld_threshold = 100.0
+    n_high_sld = int((sld_raw_values > high_sld_threshold).sum())
+    warning_codes = _density_warning_codes(
+        n_floored=n_floored,
+        n_high_sld=n_high_sld,
+        tail_jump_threshold=display_diagnostics["sld_display_outlier_threshold"],
+    )
     warnings = _density_warnings(
         n_points=len(data),
         near_identity_count=near_identity_count,
         duplicate_point_count=duplicate_stats["point_count"],
         largest_duplicate_cluster=duplicate_stats["largest_cluster"],
+        n_floored=n_floored,
+        n_high_sld=n_high_sld,
+        high_sld_threshold=high_sld_threshold,
+        max_sld_raw=max_sld_raw,
+        tail_jump_threshold=display_diagnostics["sld_display_outlier_threshold"],
+        n_tail_outliers=int(display_diagnostics["n_sld_display_outliers"]),
+        largest_tail_jump_ratio=float(display_diagnostics["largest_tail_jump_ratio"]),
     )
     floored_rows = []
     for index, row in floored.iterrows():
@@ -451,8 +485,6 @@ def _build_density_report(
             }
         )
 
-    n_points = len(data)
-    n_floored = len(floored)
     return DensityReport(
         n_points=n_points,
         requested_k_neighbors=requested_k_neighbors,
@@ -501,6 +533,10 @@ def _build_density_report(
         near_duplicate_coordinate_tolerance_rad=near_duplicate_coordinate_tolerance_rad,
         n_near_duplicate_coordinate_points=int(duplicate_stats["point_count"]),
         largest_near_duplicate_coordinate_cluster=int(duplicate_stats["largest_cluster"]),
+        high_sld_threshold=high_sld_threshold,
+        n_high_sld_points=n_high_sld,
+        fraction_high_sld_points=float(n_high_sld / n_points) if n_points else 0.0,
+        warning_codes=warning_codes,
         warnings=warnings,
     )
 
@@ -541,10 +577,36 @@ def _density_warnings(
     near_identity_count: int,
     duplicate_point_count: int,
     largest_duplicate_cluster: int,
+    n_floored: int,
+    n_high_sld: int,
+    high_sld_threshold: float,
+    max_sld_raw: float,
+    tail_jump_threshold: float | None,
+    n_tail_outliers: int,
+    largest_tail_jump_ratio: float,
 ) -> tuple[str, ...]:
     if n_points <= 0:
         return ()
     warnings = []
+    if n_high_sld:
+        warnings.append(
+            "[HIGH_SLD_PRESENT] "
+            f"{n_high_sld}/{n_points} particles have sld_raw > {high_sld_threshold:g}; "
+            f"max_sld_raw={max_sld_raw:g}. Quick-look colors saturate above "
+            f"SLD {high_sld_threshold:g}; stored values are unchanged."
+        )
+    if tail_jump_threshold is not None:
+        warnings.append(
+            "[DISCONTINUOUS_SLD_TAIL] "
+            f"tail_jump_threshold={float(tail_jump_threshold):g}; "
+            f"tail_particles={n_tail_outliers}/{n_points}; "
+            f"largest_jump_ratio={largest_tail_jump_ratio:g}."
+        )
+    if n_floored:
+        warnings.append(
+            "[DISTANCE_FLOOR_APPLIED] "
+            f"{n_floored}/{n_points} particles used the SLD distance floor."
+        )
     if near_identity_count >= 10 and near_identity_count / n_points >= 0.01:
         warnings.append(
             "many_near_identity_relative_orientations: "
@@ -557,6 +619,22 @@ def _density_warnings(
             f"RO coordinate clusters; largest_cluster={largest_duplicate_cluster}"
         )
     return tuple(warnings)
+
+
+def _density_warning_codes(
+    *,
+    n_floored: int,
+    n_high_sld: int,
+    tail_jump_threshold: float | None,
+) -> tuple[str, ...]:
+    codes = []
+    if n_high_sld:
+        codes.append("HIGH_SLD_PRESENT")
+    if tail_jump_threshold is not None:
+        codes.append("DISCONTINUOUS_SLD_TAIL")
+    if n_floored:
+        codes.append("DISTANCE_FLOOR_APPLIED")
+    return tuple(codes)
 
 
 def compute_landscape_density(
@@ -625,4 +703,171 @@ def compute_landscape_density(
         canonical_transform=None,
         active_policies={"density_policy": policy},
         density_report=density_report,
+    )
+
+
+def compute_landscape_density_arrays(
+    particle_key: np.ndarray,
+    coordinates_analysis: np.ndarray,
+    ref_source_row_id: np.ndarray,
+    mov_source_row_id: np.ndarray,
+    *,
+    policy: DensityPolicy | None = None,
+    query_batch_size: int = DEFAULT_DENSITY_QUERY_BATCH_SIZE,
+) -> tuple[LandscapeArrays, DensityReport]:
+    """Compute the production landscape without pandas object columns."""
+
+    policy = policy or DensityPolicy()
+    _validate_density_policy(policy)
+    keys = np.asarray(particle_key).astype(str)
+    coords = np.asarray(coordinates_analysis, dtype=float)
+    if coords.shape != (len(keys), 3):
+        raise ValueError("coordinates_analysis must have shape (n, 3)")
+    sld = compute_sld_values(
+        coords,
+        k_neighbors=policy.k_neighbors,
+        distance_floor_fraction=policy.distance_floor_fraction,
+        sld_metric=policy.sld_metric,
+        query_batch_size=query_batch_size,
+    )
+    display = compute_sld_display_values(
+        sld["sld_raw"],
+        mode=policy.display_normalization_mode,
+        outlier_mode=policy.display_outlier_mode,
+        tail_search_fraction=policy.tail_search_fraction,
+        tail_jump_factor=policy.tail_jump_factor,
+        max_display_outlier_fraction=policy.max_display_outlier_fraction,
+    )
+    arrays = LandscapeArrays(
+        particle_key=keys,
+        coordinates_analysis=coords,
+        coordinates_display=coords.copy(),
+        sld_unfloored=sld["sld_unfloored"],
+        sld_raw=sld["sld_raw"],
+        sld_display=display["sld_display"],
+        sld_display_is_outlier=display["sld_display_is_outlier"],
+        sld_was_floored=sld["sld_was_floored"],
+        sld_local_k_mean=sld["sld_local_k_mean"],
+        sld_effective_local_k_mean=sld["sld_effective_local_k_mean"],
+        sld_distance_floor=np.full(len(keys), float(sld["sld_distance_floor"])),
+        ref_source_row_id=ref_source_row_id,
+        mov_source_row_id=mov_source_row_id,
+    )
+    report = _build_density_report_from_arrays(
+        arrays=arrays,
+        requested_k_neighbors=policy.k_neighbors,
+        global_local_k_mean=float(sld["global_local_k_mean"]),
+        distance_floor=float(sld["sld_distance_floor"]),
+        policy=policy,
+        display_diagnostics=display,
+    )
+    return arrays, report
+
+
+def _build_density_report_from_arrays(
+    *,
+    arrays: LandscapeArrays,
+    requested_k_neighbors: int,
+    global_local_k_mean: float,
+    distance_floor: float,
+    policy: DensityPolicy,
+    display_diagnostics: dict[str, np.ndarray | float | int | str | None],
+) -> DensityReport:
+    floored_indices = np.flatnonzero(arrays.sld_was_floored)
+    floored_rows = tuple(
+        {
+            "particle_key": arrays.particle_key[index],
+            "row": int(index),
+            "sld_local_k_mean": float(arrays.sld_local_k_mean[index]),
+            "sld_effective_local_k_mean": float(arrays.sld_effective_local_k_mean[index]),
+            "sld_unfloored": float(arrays.sld_unfloored[index]),
+            "sld_raw": float(arrays.sld_raw[index]),
+            "reason": "local_k_mean_below_distance_floor",
+        }
+        for index in floored_indices
+    )
+    max_unfloored = _finite_max(arrays.sld_unfloored)
+    max_raw = _finite_max(arrays.sld_raw)
+    p99_unfloored = _finite_percentile(arrays.sld_unfloored, 99)
+    p99_raw = _finite_percentile(arrays.sld_raw, 99)
+    near_identity = _near_identity_ro_count(
+        arrays.coordinates_analysis,
+        tolerance_rad=policy.near_identity_ro_tolerance_rad,
+    )
+    duplicate_stats = _near_duplicate_coordinate_stats(
+        arrays.coordinates_analysis,
+        tolerance_rad=policy.near_duplicate_coordinate_tolerance_rad,
+    )
+    n = arrays.n_points
+    n_floored = int(len(floored_indices))
+    high_sld_threshold = 100.0
+    n_high_sld = int((arrays.sld_raw > high_sld_threshold).sum())
+    warning_codes = _density_warning_codes(
+        n_floored=n_floored,
+        n_high_sld=n_high_sld,
+        tail_jump_threshold=display_diagnostics["sld_display_outlier_threshold"],
+    )
+    warnings = _density_warnings(
+        n_points=n,
+        near_identity_count=near_identity,
+        duplicate_point_count=duplicate_stats["point_count"],
+        largest_duplicate_cluster=duplicate_stats["largest_cluster"],
+        n_floored=n_floored,
+        n_high_sld=n_high_sld,
+        high_sld_threshold=high_sld_threshold,
+        max_sld_raw=max_raw,
+        tail_jump_threshold=display_diagnostics["sld_display_outlier_threshold"],
+        n_tail_outliers=int(display_diagnostics["n_sld_display_outliers"]),
+        largest_tail_jump_ratio=float(display_diagnostics["largest_tail_jump_ratio"]),
+    )
+    display_vmax = display_diagnostics["sld_display_color_vmax"]
+    return DensityReport(
+        n_points=n,
+        requested_k_neighbors=requested_k_neighbors,
+        effective_k_neighbors=min(requested_k_neighbors, n - 1),
+        global_local_k_mean=global_local_k_mean,
+        distance_floor=distance_floor,
+        distance_floor_fraction=policy.distance_floor_fraction,
+        n_floored_points=n_floored,
+        fraction_floored_points=float(n_floored / n),
+        n_inf_sld_unfloored=int(np.isinf(arrays.sld_unfloored).sum()),
+        n_inf_sld_raw=int(np.isinf(arrays.sld_raw).sum()),
+        max_sld_unfloored=max_unfloored,
+        max_sld_raw=max_raw,
+        p99_sld_unfloored=p99_unfloored,
+        p99_sld_raw=p99_raw,
+        max_over_p99_unfloored=_ratio(max_unfloored, p99_unfloored),
+        max_over_p99_raw=_ratio(max_raw, p99_raw),
+        floored_particle_keys=tuple(arrays.particle_key[floored_indices].tolist()),
+        floored_rows=floored_rows,
+        requested_sld_metric=policy.sld_metric,
+        resolved_sld_metric=policy.sld_metric,
+        p99_5_sld_raw=_finite_percentile(arrays.sld_raw, 99.5),
+        sld_display_mode=str(display_diagnostics["sld_display_mode"]),
+        sld_display_outlier_mode=str(display_diagnostics["sld_display_outlier_mode"]),
+        sld_tail_search_fraction=float(display_diagnostics["sld_tail_search_fraction"]),
+        sld_tail_jump_factor=float(display_diagnostics["sld_tail_jump_factor"]),
+        sld_max_display_outlier_fraction=float(
+            display_diagnostics["sld_max_display_outlier_fraction"]
+        ),
+        sld_display_outlier_threshold=display_diagnostics["sld_display_outlier_threshold"],
+        sld_display_color_vmax=display_vmax,
+        largest_tail_jump_ratio=float(display_diagnostics["largest_tail_jump_ratio"]),
+        n_sld_display_outliers=int(display_diagnostics["n_sld_display_outliers"]),
+        fraction_sld_display_outliers=float(display_diagnostics["fraction_sld_display_outliers"]),
+        max_over_display_vmax=_ratio(
+            max_raw,
+            float(display_vmax) if display_vmax is not None else max_raw,
+        ),
+        near_identity_ro_tolerance_rad=policy.near_identity_ro_tolerance_rad,
+        n_near_identity_ro=near_identity,
+        fraction_near_identity_ro=float(near_identity / n),
+        near_duplicate_coordinate_tolerance_rad=policy.near_duplicate_coordinate_tolerance_rad,
+        n_near_duplicate_coordinate_points=int(duplicate_stats["point_count"]),
+        largest_near_duplicate_coordinate_cluster=int(duplicate_stats["largest_cluster"]),
+        high_sld_threshold=high_sld_threshold,
+        n_high_sld_points=n_high_sld,
+        fraction_high_sld_points=float(n_high_sld / n),
+        warning_codes=warning_codes,
+        warnings=warnings,
     )

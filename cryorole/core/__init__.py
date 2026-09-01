@@ -3,6 +3,7 @@
 from cryorole.core.density import (
     compute_sld_display_values,
     compute_landscape_density,
+    compute_landscape_density_arrays,
     compute_sld_values,
     compute_tail_jump_display_outliers,
     normalize_sld_for_display,
@@ -21,6 +22,7 @@ __all__ = [
     "EULER_CONVENTIONS",
     "EulerConventionResolution",
     "compute_landscape_density",
+    "compute_landscape_density_arrays",
     "compute_relative_orientations",
     "compute_sld_display_values",
     "compute_sld_values",

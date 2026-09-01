@@ -16,17 +16,31 @@ The installed command is `cryorole`.
 
 ## RELION STAR Workflow
 
-Run the relative-orientation analysis:
+Preflight first, then run the relative-orientation analysis:
 
 ```bash
+cryorole preflight --ref ref_domain.star --mov mov_domain.star
 cryorole run --ref ref_domain.star --mov mov_domain.star
 ```
 
+Preflight uses the same matching and pose-schema service as the real run, but
+does not create a run bundle or modify the inputs. `READY_WITH_WARNINGS` is a
+review gate (exit code 1); `BLOCKED` is a hard stop (exit code 2). The equivalent
+run-shaped check is `cryorole run ... --dry-run`.
+
 By default, the run bundle is written under `cryorole_outputs/`. The run bundle
 contains raw numeric arrays, CSV tables, reports, manifests, and default
-quick-look visualizations.
+quick-look visualizations. The quick-look directory contains Euler/RV
+triptychs for all particles, `sld_raw >= 1`, and the top 40%, plus one
+full-data log-SLD distribution. `run_report.md` explains these files; use
+explicit `cryorole visualize` for expanded display products.
 Commands write provenance into the run bundle so selections and exports can be
 audited later.
+
+The public matcher fails below 50% overlap by default. If a scientifically
+reviewed partial join must continue, add `--allow-low-overlap`; the override and
+all coverage fractions are recorded. Zero matches and duplicate identities
+always fail before pose normalization.
 
 Canonicalize the raw landscape:
 
@@ -40,6 +54,10 @@ Visualize the canonical landscape:
 cryorole visualize --run-dir cryorole_outputs --space canonical
 ```
 
+This defaults to two PNG three-view projections for `sld_display >= 1`. Add
+`--view 2d,1d` for full-filtered-row coordinate distributions or `--view 3d`
+for the self-contained offline display-only viewer.
+
 Select particles around a canonical Euler center:
 
 ```bash
@@ -51,8 +69,16 @@ cryorole select \
   -r 6
 ```
 
-The center values are usually chosen after inspecting the raw or canonical
-visualizations.
+The center values can be chosen from static visualizations or from the offline
+interactive explorer:
+
+```bash
+cryorole explore --run-dir cryorole_outputs --space canonical
+```
+
+Clicking and Evaluate create only a draft. Confirm asks for a selection ID and
+writes the same standard selection artifact consumed by export. A display
+filter or display downsample never limits the exact scientific candidate set.
 
 Export the selected source metadata:
 
@@ -63,14 +89,22 @@ cryorole export \
   --domain both
 ```
 
+Export verifies ref/mov SHA-256 identities recorded by `run`. If an input moved,
+provide `--relocated-ref NEW_REF` or `--relocated-mov NEW_MOV`; matching content
+is required. For an old pre-hash bundle only, the advanced
+`--allow-unverified-source` override is available and appears in the export
+report.
+
 ## CryoSPARC CS Workflow
 
 CryoSPARC `.cs` files are native inputs in cryoROLE 2.0:
 
 ```bash
+cryorole preflight --ref ref_domain.cs --mov mov_domain.cs
 cryorole run --ref ref_domain.cs --mov mov_domain.cs
+cryorole status --run-dir cryorole_outputs
 cryorole canonicalize --run-dir cryorole_outputs
-cryorole visualize --run-dir cryorole_outputs --space canonical
+cryorole explore --run-dir cryorole_outputs --space canonical
 cryorole select --run-dir cryorole_outputs --selection-id state_1 --space canonical -c 13 0 14 -r 6
 cryorole export --run-dir cryorole_outputs --selection-id state_1 --domain both
 ```
@@ -138,6 +172,18 @@ Display filtering, such as plotting only high-density points, is not a
 scientific selection. Use `cryorole select` when you intend to create a particle
 set for export or reconstruction.
 
+Use artifact-derived guidance at any point:
+
+```bash
+cryorole status --run-dir cryorole_outputs
+cryorole next --run-dir cryorole_outputs
+```
+
+`next` labels commands required, recommended, or optional. Canonicalization is
+optional and visualization never counts as a selection. `cryorole guide` wraps
+the same preflight/status/next services; non-interactive mode never waits for
+input or makes a scientific choice.
+
 ## Offline Animation Export
 
 Prepare a ChimeraX session with stable reference and moving model IDs, then
@@ -171,6 +217,9 @@ artifact, generated ChimeraX scripts, logs, and a manifest. Add
 `--render-mode execute --chimerax-bin PATH --no-encode` for validated
 structure and composite frames. For MP4, also provide
 `--ffmpeg-bin PATH --ffprobe-bin PATH`.
+Repeat `--reference-model-id` or `--moving-model-id` for a disjoint rigid
+group. All moving models follow the same absolute delta from their own saved
+scene transforms; independent motion within the group is not supported.
 Animation `--threshold`, `--top-fraction`, `--colormap`, `--vmin`, `--vmax`,
 and `--range` use the same display-only policy as `cryorole visualize`. Linux
 execute mode uses ChimeraX offscreen rendering and requires its completion
@@ -182,14 +231,17 @@ status artifact as well as valid PNG frames. MP4 output is validated as H.264,
 Copy and edit the paths:
 
 ```bash
+cryorole preflight --ref path/to/ref.star --mov path/to/mov.star
+
 cryorole run --ref path/to/ref.star --mov path/to/mov.star
+
+cryorole status --run-dir cryorole_outputs
 
 cryorole canonicalize --run-dir cryorole_outputs
 
-cryorole visualize \
+cryorole explore \
   --run-dir cryorole_outputs \
-  --space canonical \
-  --visual-id overview
+  --space canonical
 
 cryorole select \
   --run-dir cryorole_outputs \

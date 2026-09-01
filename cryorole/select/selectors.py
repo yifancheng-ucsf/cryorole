@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ from cryorole.core.euler_conventions import resolve_euler_convention
 from cryorole.models.landscape import Landscape
 from cryorole.models.policies import SelectionPolicy
 from cryorole.models.selection import Selection
+from cryorole.select.evaluator import center_to_rotvec, evaluate_radius_mask
 
 
 def select_particles(
@@ -263,45 +265,14 @@ def _normalize_euler_policy(policy: SelectionPolicy) -> SelectionPolicy:
         scipy_euler_sequence=policy.range_scipy_euler_sequence,
         legacy_euler_sequence=policy.range_euler_sequence,
     )
-    return SelectionPolicy(
-        selection_mode=policy.selection_mode,
-        density_support_field=policy.density_support_field,
-        density_artifact_policy=policy.density_artifact_policy,
-        top_fraction=policy.top_fraction,
-        random_fraction=policy.random_fraction,
-        random_seed=policy.random_seed,
-        metadata_domain=policy.metadata_domain,
-        metadata_column=policy.metadata_column,
-        metadata_values=tuple(policy.metadata_values),
-        metadata_source_file=policy.metadata_source_file,
-        metadata_source_row_id_field=policy.metadata_source_row_id_field,
-        split_by_metadata=policy.split_by_metadata,
-        threshold=policy.threshold,
-        sld_min=policy.sld_min,
-        sld_max=policy.sld_max,
-        threshold_operator=policy.threshold_operator,
-        tie_break_rule=policy.tie_break_rule,
-        center_input=policy.center_input,
-        center_input_representation=policy.center_input_representation,
-        center_input_space=policy.center_input_space,
+    return replace(
+        policy,
         center_euler_sequence=center.scipy_euler_sequence,
         center_euler_convention=center.euler_convention,
         center_scipy_euler_sequence=center.scipy_euler_sequence,
-        center_degrees=policy.center_degrees,
-        evaluation_space=policy.evaluation_space,
-        metric=policy.metric,
-        radius=policy.radius,
-        radius_unit=policy.radius_unit,
-        range_coordinate_source=policy.range_coordinate_source,
-        range_representation=policy.range_representation,
         range_euler_sequence=range_.scipy_euler_sequence,
         range_euler_convention=range_.euler_convention,
         range_scipy_euler_sequence=range_.scipy_euler_sequence,
-        range_degrees=policy.range_degrees,
-        range_bounds=policy.range_bounds,
-        parent_landscape_id=policy.parent_landscape_id,
-        parent_landscape_metadata=policy.parent_landscape_metadata,
-        selection_id=policy.selection_id,
     )
 
 
@@ -660,31 +631,14 @@ def _select_radius_around_center(
 ) -> tuple[object, ...]:
     coordinates = np.vstack([np.asarray(coords, dtype=float) for coords in coordinate_column])
     center = np.asarray(center_evaluated, dtype=float)
-    if policy.metric == "so3_geodesic":
-        distances = _so3_geodesic_distances(coordinates, center)
-    else:
-        distances = np.linalg.norm(coordinates - center, axis=1)
-    selected = distances <= _radius_threshold_in_radians(policy)
+    selected, _distances = evaluate_radius_mask(
+        coordinates,
+        center,
+        radius=float(policy.radius),
+        radius_unit=policy.radius_unit,
+        metric=policy.metric,
+    )
     return tuple(landscape.data.loc[selected, "particle_key"])
-
-
-def _radius_threshold_in_radians(policy: SelectionPolicy) -> float:
-    radius = float(policy.radius)
-    if policy.radius_unit == "degrees":
-        return math.radians(radius)
-    return radius
-
-
-def _so3_geodesic_distances(
-    rotvec_coordinates: np.ndarray,
-    center_rotvec: np.ndarray,
-) -> np.ndarray:
-    """Return SO(3) geodesic distances in radians from center to each rotvec."""
-
-    center_rotation = Rotation.from_rotvec(center_rotvec)
-    point_rotations = Rotation.from_rotvec(rotvec_coordinates)
-    relative = center_rotation.inv() * point_rotations
-    return relative.magnitude()
 
 
 def _select_range_by_coordinates(
@@ -734,23 +688,13 @@ def _coordinate_column_for_space(landscape: Landscape, evaluation_space: str):
 
 
 def _evaluate_center_input(policy: SelectionPolicy) -> tuple[float, float, float]:
-    center_input = np.asarray(policy.center_input, dtype=float)
-    if policy.center_input_representation == "rotvec":
-        if center_input.shape != (3,) or not np.isfinite(center_input).all():
-            raise ValueError("rotvec center_input must be a finite length-3 vector")
-        return tuple(float(value) for value in center_input)
-    if policy.center_input_representation == "euler":
-        if center_input.shape != (3,) or not np.isfinite(center_input).all():
-            raise ValueError("euler center_input must be a finite length-3 vector")
-        rotvec = Rotation.from_euler(
-            policy.center_scipy_euler_sequence,
-            center_input,
-            degrees=policy.center_degrees,
-        ).as_rotvec()
-        return tuple(float(value) for value in rotvec)
-    raise ValueError(
-        f"Unsupported center_input_representation: {policy.center_input_representation}"
+    rotvec = center_to_rotvec(
+        policy.center_input,
+        representation=policy.center_input_representation,
+        scipy_euler_sequence=policy.center_scipy_euler_sequence,
+        euler_degrees=policy.center_degrees,
     )
+    return tuple(float(value) for value in rotvec)
 
 
 def _validate_range_policy(policy: SelectionPolicy) -> None:

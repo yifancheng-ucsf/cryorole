@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 
-ANIMATION_MANIFEST_SCHEMA_VERSION = "5"
+ANIMATION_MANIFEST_SCHEMA_VERSION = "8"
 
 
 def write_animation_manifest(payload: dict[str, Any], path: str | Path) -> Path:

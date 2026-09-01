@@ -40,7 +40,7 @@ def resolve_axis_signs(
     sign_rule: str,
     centered_coordinates: np.ndarray | None = None,
     density_weights: np.ndarray | None = None,
-    positive_side: str = "high_density_skew",
+    positive_side: str = "low_density_skew",
     axis_names: tuple[str, ...] = ("alpha", "beta", "gamma"),
     ambiguity_threshold: float = 1e-8,
 ) -> AxisSignResult:

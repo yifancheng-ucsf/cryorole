@@ -306,6 +306,7 @@ def _density_report_from_payload(value: Any) -> DensityReport | None:
     _normalize_density_report_payload(data)
     data["floored_particle_keys"] = tuple(data.get("floored_particle_keys", ()))
     data["floored_rows"] = tuple(data.get("floored_rows", ()))
+    data["warning_codes"] = tuple(data.get("warning_codes", ()))
     data["warnings"] = tuple(data.get("warnings", ()))
     return DensityReport(**data)
 

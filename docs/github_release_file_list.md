@@ -62,6 +62,9 @@ docs/production_run_plan.md
 docs/roadmap.md
 docs/installation.md
 docs/quick_start.md
+docs/workflow_ux.md
+docs/cli_reference.md
+docs/faq.md
 docs/output_files.md
 docs/migration_from_0x.md
 docs/relion_workflow.md
@@ -78,6 +81,7 @@ Local or generated directories:
 .idea/
 .pytest_cache/
 __pycache__/
+build/
 cryorole.egg-info/
 cryorole_outputs/
 selection_out/
@@ -127,6 +131,13 @@ cryorole2_plot_1d_updated.py
 The two `cryorole2_*` plotting scripts may be reconsidered later as
 `tools/` or `examples/scripts/` helpers, but they should not be copied into the
 initial clean release root.
+
+`build/` and `cryorole.egg-info/` are generated packaging outputs. The root
+archives and `old_files/` remain local historical material; archive or remove
+them only in a separately authorized cleanup. `main.py` is an IDE example and
+`star_align_exclude.py` is a development helper, not public package entry
+points. `cryorole_chimerax_viewer.py` remains an intentional public tool and
+must stay in the release list.
 
 The versioned development filename `CryoROLE2_Points_in_ChimeraX_v5.py` has
 been replaced by the public, version-neutral

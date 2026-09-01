@@ -27,7 +27,11 @@ cryoROLE does not replace 3D classification, 3D variability analysis, cryoDRGN, 
 
 This repository contains the cryoROLE 2.0 command-line workflow. The package metadata version is currently `2.0.0a1`.
 
-The command-line interface is the supported public interface. The current development priority is hardening the 2.0 workflow for production-scale datasets while preserving stable run-bundle, selection, and export contracts.
+The command-line interface is the supported public interface. Core
+Productionization and the first Workflow UX milestone are implemented:
+side-effect-free preflight, artifact-derived status/next guidance, an offline
+interactive explorer, and an optional conservative guide now sit on top of the
+stable run-bundle, selection, and export contracts.
 
 ## Installation
 
@@ -44,7 +48,9 @@ python -m pip install .
 cryorole --help
 ```
 
-cryoROLE requires Python 3.9 or newer. Core Python dependencies are declared in `pyproject.toml` and include `numpy`, `scipy`, `pandas`, and `matplotlib`.
+cryoROLE requires Python 3.9 or newer. Core Python dependencies are declared in
+`pyproject.toml` and include `numpy`, `scipy`, `pandas`, `matplotlib`, and
+`Pillow`.
 
 For an editable development/test installation:
 
@@ -89,17 +95,21 @@ Use `--row-aligned` only when row `N` in the reference metadata is known to desc
 The public workflow is:
 
 ```text
-prepare/match inputs -> run -> canonicalize -> visualize -> select -> export
+preflight -> run -> status/next -> [canonicalize] -> explore/visualize -> confirm/select -> export
 ```
 
 | Step | Role |
 |---|---|
+| `preflight` / `run --dry-run` | Validates inputs, matching, pose schema, and resources without creating a run bundle. |
 | `align` | Optional STAR pre-processing step that prepares row-aligned metadata when default matching is insufficient. |
 | `run` | Computes the raw RO landscape and writes the run bundle. |
+| `status` / `next` | Reads actual artifacts and proposes exact required, recommended, and optional commands. |
 | `canonicalize` | Optionally derives a motion-aligned coordinate frame for interpretation and comparison. It does not overwrite the raw landscape. |
 | `visualize` | Creates display-only plots and display tables from raw, canonical, or selected rows. |
+| `explore` | Opens a localhost-only offline explorer; clicking/evaluation makes a draft, and Confirm writes a standard selection. |
 | `select` | Creates an explicit, auditable particle-selection artifact. |
 | `export` | Subsets the original source metadata using the recorded selection and source-row provenance. |
+| `guide` | Conservatively combines preflight/status/next without silently making scientific decisions. |
 
 A key design rule is that visualization filters are display-only. They do not create scientific selections and do not modify the raw or canonical landscape. To generate particles for downstream reconstruction, use `cryorole select` followed by `cryorole export`.
 
@@ -114,6 +124,7 @@ The examples below use the default run directory, `cryorole_outputs/`, and assum
 If the reference and moving-domain STAR files contain safe particle identity columns, run:
 
 ```bash
+cryorole preflight --ref ref_domain.star --mov mov_domain.star
 cryorole run --ref ref_domain.star --mov mov_domain.star
 ```
 
@@ -139,26 +150,52 @@ cryorole run --ref aligned_ref.star --mov aligned_mov.star --row-aligned
 For CryoSPARC input, cryoROLE reads `.cs` files directly and matches particles by `uid`:
 
 ```bash
+cryorole run --ref ref_domain.cs --mov mov_domain.cs --dry-run
 cryorole run --ref ref_domain.cs --mov mov_domain.cs
 ```
 
+`preflight` and `run --dry-run` use the same validation service as the real
+run, create no run directory, and report `READY`, `READY_WITH_WARNINGS`, or
+`BLOCKED`. Warnings return exit code 1 and blocked inputs return 2.
+
 ### Inspect the raw landscape
 
-`cryorole run` writes default quick-look visualizations. You can also generate explicit raw visualizations:
+`cryorole run` writes seven flat quick-look PNGs: Euler/RV triptychs for all
+particles, `sld_raw >= 1`, and the top 40%, plus a full-data log-SLD
+distribution. `run_report.md` explains the outputs and warnings. Generate
+an independent compact view with the explicit visualization command. Its
+default is two PNG triptychs (Euler and RV) for `sld_display >= 1`:
 
 ```bash
 cryorole visualize --run-dir cryorole_outputs --space raw
+cryorole visualize --run-dir cryorole_outputs --space raw --view 2d,1d
+cryorole visualize --run-dir cryorole_outputs --space raw --view 3d
 ```
+
+The 1D option uses every row that passes the display filters. The 3D default is
+a self-contained offline viewer; it is exploratory and cannot create a
+Selection.
+
+For local linked Euler/RV views and exact radius-selection previews:
+
+```bash
+cryorole explore --run-dir cryorole_outputs --space raw
+```
+
+The explorer binds only to `127.0.0.1`, uses packaged assets with no CDN, and
+may downsample points only for display. Exact counts and Confirm always evaluate
+the full parent landscape in Python using the same SO(3) evaluator as
+`cryorole select`. No Selection is written until Confirm.
 
 ### Inspect a landscape interactively in ChimeraX
 
 The standalone `cryorole_chimerax_viewer.py` script registers display-only
 ChimeraX commands for cryoROLE landscape CSV files. Load it once in ChimeraX,
-then open a raw, canonical, or visualization `display_table.csv`:
+then open a raw or canonical landscape CSV:
 
 ```text
 open /path/to/cryorole_chimerax_viewer.py
-cryorole open /path/to/display_table.csv
+cryorole open /path/to/raw_landscape.csv
 ```
 
 The viewer can switch between Euler and rotation-vector coordinates, color by
@@ -223,6 +260,8 @@ Animation display filters and legacy style are shared with
 an explicit renderer-completion status plus valid frames. Composition preserves
 the full input frames and their aspect ratios; no frame set is automatically
 deleted. Animation filters are display-only and never create selections.
+Repeat either model-ID option to define disjoint rigid groups; all movers use
+the same absolute trajectory delta from their own saved scene transforms.
 
 ### Select particles
 
@@ -256,10 +295,16 @@ Export subsets the original source metadata using recorded source-row provenance
 Use `cryorole COMMAND --help` for the exact current options.
 
 ```bash
+cryorole preflight --ref REF_METADATA --mov MOV_METADATA [--json REPORT.json]
+cryorole run --ref REF_METADATA --mov MOV_METADATA --dry-run
 cryorole align --ref REF.star --mov MOV.star
 cryorole run --ref REF_METADATA --mov MOV_METADATA [--output-dir RUN_DIR]
+cryorole status --run-dir RUN_DIR
+cryorole next --run-dir RUN_DIR
+cryorole guide --run-dir RUN_DIR --non-interactive
 cryorole canonicalize --run-dir cryorole_outputs
 cryorole visualize --run-dir cryorole_outputs --space canonical
+cryorole explore --run-dir cryorole_outputs --space canonical --canonical-id default
 cryorole animate --run-dir cryorole_outputs --path-csv PATH.csv --path-space rv --chimerax-session SCENE.cxs --reference-model-id "#1" --moving-model-id "#2" --pivot 0 0 0 --baseline-ro identity --map-frame raw --output-dir ANIMATION_DIR
 cryorole select --run-dir cryorole_outputs --selection-id state_1 --space canonical -c A B C -r DEG
 cryorole export --run-dir cryorole_outputs --selection-id state_1 --domain both
@@ -273,6 +318,7 @@ A standard cryoROLE run bundle records numeric arrays, flat tables, reports, vis
 cryorole_outputs/
   run_manifest.json
   run_summary.json
+  run_report.md
   data/
     raw_landscape.npz
     raw_landscape.csv
@@ -292,6 +338,7 @@ Important user-facing artifacts include:
 |---|---|
 | `run_manifest.json` | Top-level provenance and artifact index for the run bundle. |
 | `run_summary.json` | Human-readable summary of inputs, matching, policies, and outputs. |
+| `run_report.md` | Concise guide to files, quick-look figures, warnings, and next commands. |
 | `data/raw_landscape.npz` | Machine-readable source of truth for the raw RO landscape. |
 | `data/raw_landscape.csv` | Flat table for inspection, plotting, and external tools. |
 | `data/match_table.csv` | Matched-particle provenance linking reference and moving-domain source rows. |
@@ -323,6 +370,9 @@ JSON files are used for reports, summaries, manifests, and provenance. Full obje
 
 - [Installation](docs/installation.md)
 - [Quick start](docs/quick_start.md)
+- [Workflow UX tutorial](docs/workflow_ux.md)
+- [CLI reference](docs/cli_reference.md)
+- [FAQ and troubleshooting](docs/faq.md)
 - [RELION workflow](docs/relion_workflow.md)
 - [CryoSPARC workflow](docs/cryosparc_workflow.md)
 - [Output files](docs/output_files.md)

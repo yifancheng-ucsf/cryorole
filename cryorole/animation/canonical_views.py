@@ -19,7 +19,7 @@ from cryorole.animation.transforms import load_explicit_scene_basis, validate_sc
 from cryorole.canonicalize.transforms import validate_canonical_transform
 
 
-CANONICAL_VIEWS_SCHEMA_VERSION = "1"
+CANONICAL_VIEWS_SCHEMA_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,7 @@ class CanonicalViewBasis:
         return {
             "name": self.name,
             "file_name": self.file_name,
+            "session_file_name": f"{self.name}.cxs",
             "toward_viewer": self.outward,
             "screen_right": self.right,
             "screen_up": self.up,
@@ -93,6 +94,7 @@ def generate_canonical_view_scripts(
     views: Sequence[CanonicalViewBasis],
     width: int,
     height: int,
+    save_sessions: bool = False,
 ) -> CanonicalViewScripts:
     """Generate camera-only scripts without requiring ChimeraX."""
 
@@ -113,9 +115,11 @@ def generate_canonical_view_scripts(
     config = {
         "session_path": str(session),
         "view_dir": str((root / "views").resolve()),
+        "session_dir": str((root / "sessions").resolve()),
         "status_path": str(status_path.resolve()),
         "width": int(width),
         "height": int(height),
+        "save_sessions": bool(save_sessions),
         "views": [view.manifest_record() for view in resolved_views],
     }
     python_path.write_text(_python_script_text(config), encoding="utf-8")
@@ -150,6 +154,7 @@ def run_canonical_views(args: Any) -> CanonicalViewsResult:
         "run_dir": str(run_dir),
         "canonical_id": args.canonical_id,
         "ChimeraX_session": str(session),
+        "save_sessions": bool(args.save_sessions),
         "stage_statuses": stage_statuses,
         "warnings": [],
         "errors": [],
@@ -170,6 +175,7 @@ def run_canonical_views(args: Any) -> CanonicalViewsResult:
             views=views,
             width=args.width,
             height=args.height,
+            save_sessions=args.save_sessions,
         )
         stage_statuses["scripts"] = "complete"
         status = "scripts_ready"
@@ -187,16 +193,26 @@ def run_canonical_views(args: Any) -> CanonicalViewsResult:
             completion = validate_canonical_view_completion(
                 scripts.status_path,
                 expected_count=len(views),
+                expected_session_count=len(views) if args.save_sessions else 0,
             )
             image_validation = validate_canonical_view_images(
                 output_dir / "views",
                 expected_names=tuple(view.file_name for view in views),
                 expected_dimensions=(args.width, args.height),
             )
+            session_validation = (
+                validate_canonical_view_sessions(
+                    output_dir / "sessions",
+                    expected_names=tuple(f"{view.name}.cxs" for view in views),
+                )
+                if args.save_sessions
+                else None
+            )
             stage_statuses["render"] = "complete"
             status = "rendered"
         else:
             stage_statuses["render"] = "not_requested"
+            session_validation = None
         manifest.update(
             {
                 "status": status,
@@ -214,7 +230,13 @@ def run_canonical_views(args: Any) -> CanonicalViewsResult:
                 "ChimeraX_return_code": return_code,
                 "completion": completion,
                 "image_validation": image_validation,
-                "output_paths": _output_paths(output_dir, scripts, status),
+                "session_validation": session_validation,
+                "output_paths": _output_paths(
+                    output_dir,
+                    scripts,
+                    status,
+                    save_sessions=args.save_sessions,
+                ),
                 "stage_statuses": stage_statuses,
             }
         )
@@ -243,6 +265,7 @@ def validate_canonical_view_completion(
     path: str | Path,
     *,
     expected_count: int,
+    expected_session_count: int = 0,
 ) -> dict[str, object]:
     """Require renderer success, unchanged models, and restored camera."""
 
@@ -262,6 +285,11 @@ def validate_canonical_view_completion(
         raise RuntimeError("ChimeraX canonical-view renderer changed a model transform")
     if payload.get("camera_restored") is not True:
         raise RuntimeError("ChimeraX canonical-view renderer did not restore the camera")
+    if expected_session_count:
+        if payload.get("sessions_saved") is not True:
+            raise RuntimeError("ChimeraX canonical-view renderer did not save sessions")
+        if payload.get("session_count") != expected_session_count:
+            raise RuntimeError("ChimeraX canonical-view session count does not match expected count")
     return payload
 
 
@@ -293,6 +321,24 @@ def validate_canonical_view_images(
         "dimensions": expected_dimensions,
         "files": [str(path) for path in paths],
     }
+
+
+def validate_canonical_view_sessions(
+    directory: str | Path,
+    *,
+    expected_names: Sequence[str],
+) -> dict[str, object]:
+    """Validate exact, non-empty derived camera-session files."""
+
+    root = Path(directory)
+    paths = tuple(sorted(root.glob("*.cxs"))) if root.is_dir() else ()
+    expected = tuple(sorted(expected_names))
+    if tuple(path.name for path in paths) != expected:
+        raise RuntimeError("Canonical-view session names do not match the required three views")
+    for path in paths:
+        if path.stat().st_size <= 0:
+            raise RuntimeError(f"Canonical-view session is empty: {path}")
+    return {"count": len(paths), "files": [str(path) for path in paths]}
 
 
 def _resolve_raw_to_scene(args: Any) -> tuple[np.ndarray, dict[str, object]]:
@@ -336,6 +382,8 @@ def _output_paths(
     output_dir: Path,
     scripts: CanonicalViewScripts,
     status: str,
+    *,
+    save_sessions: bool,
 ) -> dict[str, object]:
     return {
         "manifest": str(output_dir / "canonical_views.json"),
@@ -350,6 +398,11 @@ def _output_paths(
             str(scripts.status_path) if status == "rendered" else None
         ),
         "views": str(output_dir / "views") if status == "rendered" else None,
+        "sessions": (
+            str(output_dir / "sessions")
+            if status == "rendered" and save_sessions
+            else None
+        ),
     }
 
 
@@ -369,7 +422,14 @@ from chimerax.core.commands import run
 from chimerax.geometry import Place
 
 CONFIG = json.loads({config_json!r})
-STATE = {{"frame_count": 0, "models_unchanged": False, "camera_restored": False}}
+STATE = {{
+    "frame_count": 0,
+    "session_count": 0,
+    "session_files": [],
+    "sessions_saved": False,
+    "models_unchanged": False,
+    "camera_restored": False,
+}}
 
 
 def quote_command_path(value):
@@ -410,6 +470,9 @@ def render():
     ]
     output_dir = Path(CONFIG["view_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    session_dir = Path(CONFIG["session_dir"])
+    if CONFIG["save_sessions"]:
+        session_dir.mkdir(parents=True, exist_ok=True)
 
     # Camera Place maps camera coordinates to scene coordinates. Its first,
     # second, and third columns are screen-right, screen-up, and toward-viewer.
@@ -436,6 +499,17 @@ def render():
             STATE["frame_count"] += 1
             if not unchanged_models(model_baselines):
                 raise RuntimeError("A model scene transform changed during camera rendering")
+            if CONFIG["save_sessions"]:
+                session_path = session_dir / view["session_file_name"]
+                run(session, "save {{}}".format(quote_command_path(session_path)))
+                STATE["session_count"] += 1
+                STATE["session_files"].append(str(session_path))
+                if not unchanged_models(model_baselines):
+                    raise RuntimeError("A model scene transform changed during session export")
+        STATE["sessions_saved"] = bool(
+            CONFIG["save_sessions"]
+            and STATE["session_count"] == len(CONFIG["views"])
+        )
         STATE["models_unchanged"] = bool(unchanged_models(model_baselines))
     finally:
         camera.position = camera_baseline

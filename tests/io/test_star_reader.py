@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cryorole.io.readers.star_reader import read_relion_star
+from cryorole.io.readers.star_reader import read_relion_star, read_relion_star_particle_columns
 
 
 def test_star_reader_parses_raw_tables_without_interpretation(tmp_path: Path) -> None:
@@ -50,3 +50,29 @@ def test_star_reader_parses_raw_tables_without_interpretation(tmp_path: Path) ->
     ]
     assert data.particles.loc[0, "_rlnAngleRot"] == "10"
     assert "_rotation_matrix_active" not in data.particles.columns
+
+
+def test_streaming_particle_reader_retains_only_requested_columns(tmp_path: Path) -> None:
+    star_path = tmp_path / "wide.star"
+    star_path.write_text(
+        "\n".join([
+            "data_particles", "", "loop_", "_rlnImageName #1",
+            "_rlnAngleRot #2", "_rlnAngleTilt #3", "_rlnAnglePsi #4",
+            "_rlnLargeUnusedText #5",
+            "1@stack.mrcs 10 20 30 never-retain-me",
+            "2@stack.mrcs 40 50 60 never-retain-me-either",
+        ]),
+        encoding="utf-8",
+    )
+
+    data = read_relion_star_particle_columns(
+        star_path,
+        columns=("_rlnImageName", "_rlnAngleRot", "_rlnAngleTilt", "_rlnAnglePsi"),
+    )
+
+    assert data.report.row_count == 2
+    assert "_rlnLargeUnusedText" in data.report.columns
+    assert list(data.particles.columns) == [
+        "_rlnImageName", "_rlnAngleRot", "_rlnAngleTilt", "_rlnAnglePsi",
+    ]
+    assert "_rlnLargeUnusedText" not in data.particles.columns

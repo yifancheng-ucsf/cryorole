@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
+DEFAULT_MIN_MATCH_OVERLAP = 0.50
+
+
 @dataclass(frozen=True)
 class InputPolicy:
     """Controls source type inference and strictness for raw input parsing."""
@@ -91,7 +94,8 @@ class MatchPolicy:
     join_type: str = "inner"
     duplicate_handling: str = "fail"
     low_overlap_behavior: str = "fail"
-    overlap_threshold: float = 0.0
+    overlap_threshold: float = DEFAULT_MIN_MATCH_OVERLAP
+    low_overlap_allowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,7 +138,7 @@ class CanonicalizationPolicy:
     fit_top_fraction: float = 0.40
     density_support_field: str = "sld_raw"
     sign_rule: str = "density_weighted_skewness"
-    positive_side: str = "high_density_skew"
+    positive_side: str = "low_density_skew"
     sign_weight_field: str = "sld_raw"
     sign_ambiguity_threshold: float = 1e-8
     handedness_rule: str = "right_handed"
@@ -238,6 +242,9 @@ class SelectionMetadataExportPolicy:
     domain: str = "both"
     format: str = "auto"
     run_dir: str | Path | None = None
+    relocated_ref: str | Path | None = None
+    relocated_mov: str | Path | None = None
+    allow_unverified_source: bool = False
 
 
 @dataclass(frozen=True)

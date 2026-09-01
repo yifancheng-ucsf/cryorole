@@ -33,6 +33,10 @@ If matching reorders rows or drops unmatched particles, cryoROLE records that in
 the run reports and manifest. Downstream selections and exports use the recorded
 source-row provenance from the run bundle.
 
+Public uid matching requires at least 50% overlap unless
+`--allow-low-overlap` is explicit. Zero matches and duplicate uid values fail
+before pose normalization.
+
 ## Row-Aligned Inputs
 
 Use `--row-aligned` only when the two `.cs` files have already been prepared so
@@ -50,11 +54,16 @@ reorder, or drop particles.
 
 ## Standard Workflow
 
-Run:
+Preflight and run:
 
 ```bash
+cryorole preflight --ref ref_domain.cs --mov mov_domain.cs
 cryorole run --ref ref_domain.cs --mov mov_domain.cs
 ```
+
+Preflight validates `uid`, the `alignments3D/pose` vector shape and finite
+values, matching coverage, and resources with no run-bundle side effects. The
+equivalent check is `cryorole run ... --dry-run`.
 
 Canonicalize:
 
@@ -66,6 +75,16 @@ Visualize:
 
 ```bash
 cryorole visualize --run-dir cryorole_outputs --space canonical
+```
+
+The default is two PNG triptychs for `sld_display >= 1`; use `--view 2d,1d`
+or `--view 3d` only when those additional display products are needed.
+
+Or explore linked Euler/RV projections locally and create a standard selection
+only after explicit Confirm:
+
+```bash
+cryorole explore --run-dir cryorole_outputs --space canonical
 ```
 
 Select:
@@ -107,23 +126,36 @@ Important outputs include:
 ```text
 run_manifest.json
 run_summary.json
+run_report.md
 data/raw_landscape.npz
 data/raw_landscape.csv
 data/match_table.csv
 reports/
-visualizations/
+visualizations/quicklook/  # seven flat PNGs
 canonical/
 selections/
 exports/
 ```
 
+The run quick-look contains Euler/RV triptychs for all particles, `sld_raw >=
+1`, and the top 40%, plus the full-data log-SLD distribution. Use `cryorole
+visualize` for expanded display artifacts.
+
 See `docs/output_files.md` for details.
+
+`cryorole status --run-dir cryorole_outputs` derives progress and integrity from
+the actual artifacts. `cryorole next --run-dir cryorole_outputs` prints exact
+required, recommended, and optional commands; canonicalization remains optional.
 
 ## Export Notes
 
 CryoSPARC export preserves the structured-array dtype and vector-valued fields
 of the source metadata when writing selected subsets. Export does not reselect,
 rematch, or write canonical/display coordinates back as physical source poses.
+
+Export first verifies the source `.cs` SHA-256 recorded by `run`. A moved file
+must be supplied explicitly with `--relocated-ref` / `--relocated-mov` and must
+match byte-for-byte; a changed or replaced `.cs` file is rejected.
 
 ## Difference from 0.x Workflows
 

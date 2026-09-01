@@ -13,10 +13,18 @@ Core Python dependencies are declared in `pyproject.toml`:
 matplotlib
 numpy
 pandas
+Pillow
 scipy
 ```
 
 Test dependencies are available through the optional `test` extra.
+
+`cryorole explore` adds no additional Python dependency or hosted service. Its server uses
+the Python standard library, its HTML/CSS/JavaScript assets are packaged with
+cryoROLE, and it opens in a normal local web browser. It binds only to
+`127.0.0.1` and does not load a public CDN. A browser is needed only to use the
+interactive page; preflight, run, status, selection, and export remain fully
+CLI-capable.
 
 ## Recommended Conda + GitHub Install
 
@@ -91,6 +99,8 @@ After installation, check:
 ```bash
 cryorole --help
 cryorole run --help
+cryorole preflight --help
+cryorole explore --help
 ```
 
 For a lightweight test pass:

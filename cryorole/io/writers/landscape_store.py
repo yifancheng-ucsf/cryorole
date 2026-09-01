@@ -15,8 +15,8 @@ from cryorole.io.landscape_resolver import resolve_landscape_path
 from cryorole.export.landscape import (
     read_landscape_json,
     read_landscape_json_metadata,
-    write_canonical_landscape_csv,
-    write_raw_landscape_csv,
+    write_canonical_landscape_csv,  # noqa: F401 - compatibility re-export
+    write_raw_landscape_csv,  # noqa: F401 - compatibility re-export
 )
 from cryorole.models.landscape_arrays import LandscapeArrays
 from cryorole.models.landscape import Landscape
@@ -131,7 +131,54 @@ def write_landscape_npz_arrays(
         payload["coordinates_canonical"] = np.asarray(arrays.coordinates_canonical, dtype=float)
     if arrays.canonical_transform is not None:
         payload["canonical_transform"] = np.asarray(arrays.canonical_transform, dtype=float)
-    np.savez(output_path, **payload)
+    np.savez_compressed(output_path, **payload)
+    return output_path
+
+
+def write_raw_landscape_csv_from_arrays(
+    arrays: LandscapeArrays,
+    path: str | Path,
+    *,
+    overwrite: bool = False,
+    chunk_size: int = 100000,
+    euler_sequence: str | None = None,
+    euler_degrees: bool = True,
+) -> Path:
+    """Stream a raw landscape CSV while deriving Euler values per chunk."""
+
+    if chunk_size < 1:
+        raise ValueError("csv chunk_size must be positive")
+    output_path = Path(path)
+    _prepare_output_path(output_path, overwrite=overwrite)
+    resolved_euler = resolve_euler_convention(scipy_euler_sequence=euler_sequence)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(_raw_csv_header())
+        for start in range(0, arrays.n_points, chunk_size):
+            stop = min(start + chunk_size, arrays.n_points)
+            coordinates = arrays.coordinates_analysis[start:stop]
+            euler = Rotation.from_rotvec(coordinates).as_euler(
+                resolved_euler.scipy_euler_sequence,
+                degrees=euler_degrees,
+            )
+            angle_deg = np.degrees(np.linalg.norm(coordinates, axis=1))
+            ref_rows = _source_rows_for_chunk(arrays.ref_source_row_id, start, stop)
+            mov_rows = _source_rows_for_chunk(arrays.mov_source_row_id, start, stop)
+            for offset, row_index in enumerate(range(start, stop)):
+                writer.writerow(
+                    [
+                        arrays.particle_key[row_index], ref_rows[offset], mov_rows[offset],
+                        coordinates[offset, 0], coordinates[offset, 1], coordinates[offset, 2],
+                        angle_deg[offset], euler[offset, 0], euler[offset, 1], euler[offset, 2],
+                        coordinates[offset, 0], coordinates[offset, 1], coordinates[offset, 2],
+                        euler[offset, 0], euler[offset, 1], euler[offset, 2],
+                        arrays.sld_unfloored[row_index], arrays.sld_raw[row_index],
+                        arrays.sld_display[row_index], bool(arrays.sld_display_is_outlier[row_index]),
+                        bool(arrays.sld_was_floored[row_index]), arrays.sld_local_k_mean[row_index],
+                        arrays.sld_effective_local_k_mean[row_index], arrays.sld_distance_floor[row_index],
+                        "analysis",
+                    ]
+                )
     return output_path
 
 
@@ -248,6 +295,47 @@ def read_landscape_npz_arrays(path: str | Path) -> LandscapeArrays:
                 else None
             ),
         )
+
+
+def landscape_from_arrays(
+    arrays: LandscapeArrays,
+    indices: np.ndarray | None = None,
+) -> Landscape:
+    """Materialize only requested compact-array rows as a compatibility Landscape."""
+
+    selected = (
+        np.arange(arrays.n_points, dtype=int)
+        if indices is None
+        else np.asarray(indices, dtype=int)
+    )
+    display = (
+        arrays.coordinates_analysis
+        if arrays.coordinates_display is None
+        else arrays.coordinates_display
+    )
+    data: dict[str, object] = {
+        "particle_key": arrays.particle_key[selected],
+        "coordinates_analysis": list(arrays.coordinates_analysis[selected]),
+        "coordinates_display": list(display[selected]),
+        "sld_unfloored": arrays.sld_unfloored[selected],
+        "sld_raw": arrays.sld_raw[selected],
+        "sld_display": arrays.sld_display[selected],
+        "sld_display_is_outlier": arrays.sld_display_is_outlier[selected],
+        "sld_was_floored": arrays.sld_was_floored[selected],
+        "sld_local_k_mean": arrays.sld_local_k_mean[selected],
+        "sld_effective_local_k_mean": arrays.sld_effective_local_k_mean[selected],
+        "sld_distance_floor": arrays.sld_distance_floor[selected],
+    }
+    if arrays.coordinates_canonical is not None:
+        data["coordinates_canonical"] = list(arrays.coordinates_canonical[selected])
+    if arrays.ref_source_row_id is not None:
+        data["ref_source_row_id"] = arrays.ref_source_row_id[selected]
+    if arrays.mov_source_row_id is not None:
+        data["mov_source_row_id"] = arrays.mov_source_row_id[selected]
+    return Landscape(
+        data=pd.DataFrame(data),
+        canonical_transform=arrays.canonical_transform,
+    )
 
 
 def write_canonical_landscape_csv_from_npz(
@@ -525,6 +613,18 @@ def _canonical_csv_header(euler_sequence: str) -> list[str]:
         "sld_effective_local_k_mean",
         "sld_distance_floor",
         "coordinate_source",
+    ]
+
+
+def _raw_csv_header() -> list[str]:
+    return [
+        "particle_key", "ref_source_row_id", "mov_source_row_id",
+        "raw_rv_x_rad", "raw_rv_y_rad", "raw_rv_z_rad", "raw_angle_deg",
+        "raw_ea_zyx_alpha_deg", "raw_ea_zyx_beta_deg", "raw_ea_zyx_gamma_deg",
+        "rotvec_x", "rotvec_y", "rotvec_z", "euler_alpha", "euler_beta", "euler_gamma",
+        "sld_unfloored", "sld_raw", "sld_display", "sld_display_is_outlier",
+        "sld_was_floored", "sld_local_k_mean", "sld_effective_local_k_mean",
+        "sld_distance_floor", "coordinate_source",
     ]
 
 

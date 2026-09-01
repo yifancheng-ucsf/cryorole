@@ -1,6 +1,6 @@
 # cryoROLE Offline Animation Export Plan
 
-**Status:** Phase 1–4 and presentation refinements, including fixed inward dual-view crop, implemented; real ChimeraX/FFmpeg validation remains environment-dependent
+**Status:** Phase 1–4 and presentation refinements, including one/two/three structure views, implemented; rigid model groups implemented; real ChimeraX/FFmpeg validation remains environment-dependent
 **Command:** `cryorole animate`
 **Priority:** downstream feature; it must not interrupt the active production-scale `run` work
 **Audience:** cryoROLE developers, validation users, and contributors preparing publication movies
@@ -12,14 +12,14 @@
 `cryorole animate` is an offline display/export command. The implemented
 Phase 1–4 path connects
 an orientation trajectory in a cryoROLE landscape to a rigid-body rendering of
-two density domains:
+two non-empty, disjoint model groups:
 
 ```text
 waypoint CSV
   -> SO(3) trajectory
   -> three synchronized Euler projections
-  -> fixed reference-domain density
-  -> moving-domain rigid-body rotation about a declared pivot
+  -> fixed reference models
+  -> moving models transformed as one rigid group about a declared pivot
   -> optional ChimeraX structure frames
   -> deterministic composite frames
   -> optional validated H.264 MP4
@@ -49,8 +49,9 @@ following boundaries are explicit:
 4. Landscape coordinate space and ChimeraX scene/map basis are separate
    concepts. Equality of the words `raw` or `canonical` is not sufficient
    evidence that a session and a trajectory share a physical frame.
-5. The saved moving-model transform represents a declared baseline RO. The
-   baseline must be recorded and used for every frame.
+5. Each saved moving-model transform represents the shared declared baseline
+   RO. Every frame applies one absolute delta to each model's own saved scene
+   transform.
 6. `script-only` can prepare trajectories, landscape frames, and ChimeraX
    scripts without ChimeraX. It cannot promise composite frames or MP4 until
    matching structure frames exist.
@@ -70,7 +71,7 @@ The first slice should support:
 - EA or RV waypoint CSV input;
 - quaternion SLERP along a waypoint path;
 - a preconfigured ChimeraX `.cxs` session;
-- explicit reference and moving model IDs;
+- one or more exact reference and moving model IDs;
 - an explicit pivot in ChimeraX scene coordinates;
 - three synchronized Euler projection panels;
 - script generation without a ChimeraX dependency;
@@ -111,7 +112,8 @@ cryorole animate \
   --path-space ea \
   --chimerax-session ino80_animation_scene.cxs \
   --reference-model-id "#1" \
-  --moving-model-id "#2" \
+  --reference-model-id "#2" \
+  --moving-model-id "#3" \
   --pivot 120.4 98.6 75.2 \
   --baseline-ro first-waypoint \
   --map-frame canonical \
@@ -127,8 +129,8 @@ Required inputs:
 --path-csv PATH
 --path-space ea|rv
 --chimerax-session PATH
---reference-model-id MODEL_ID
---moving-model-id MODEL_ID
+--reference-model-id MODEL_ID          repeat for each stationary reference model
+--moving-model-id MODEL_ID             repeat for each model in the rigid moving group
 --pivot X,Y,Z
 --baseline-ro identity|first-waypoint|ea:A,B,G|rv:X,Y,Z
 --map-frame raw|canonical|explicit
@@ -197,19 +199,23 @@ Composition and encoding controls:
 --movie-name NAME.mp4                 default: animation.mp4
 ```
 
-Optional dual-view input:
+Optional multi-view inputs:
 
 ```text
 --secondary-chimerax-session PATH
+--tertiary-chimerax-session PATH
 ```
 
-Its presence enables two synchronized structure views. The current
-`--chimerax-session` remains the primary session and single-view default.
+The primary session alone keeps single-view behavior. Secondary enables two
+views; tertiary enables three and requires secondary. Multiple views use
+`stacked` layout only.
 
-Implemented dual-view crop control:
+Implemented fixed multi-view crop controls:
 
 ```text
---dual-structure-horizontal-crop FRACTION   default: 0
+--structure-horizontal-crop FRACTION        default: 0
+--structure-vertical-crop FRACTION          default: 0
+--dual-structure-horizontal-crop FRACTION   compatibility alias for horizontal crop
 ```
 
 Rules:
@@ -270,12 +276,15 @@ cryorole canonical-views \
   --map-frame raw \
   --render-mode execute \
   --chimerax-bin /path/to/chimerax \
+  --save-sessions \
   --output-dir canonical_views
 ```
 
 It accepts `--map-frame raw|explicit`; explicit mode requires
 `--map-frame-transform`. Script-only is the default. Width and height default
-to 900 pixels.
+to 900 pixels. Optional `--save-sessions` writes the three camera-only `.cxs`
+files in execute mode; script-only prepares the export script without claiming
+that sessions were created.
 
 ---
 
@@ -404,7 +413,7 @@ waypoint_coordinate_set       raw or canonical landscape coordinates
 resolved_ro_space             raw cryoROLE RO used for physical delta
 session_scene_basis           physical basis used by ChimeraX scene positions
 pivot_coordinate_frame        ChimeraX scene coordinates
-baseline_ro                   RO represented by the saved moving-model pose
+baseline_ro                   shared RO represented by all saved moving-model poses
 ```
 
 If the ChimeraX maps were globally reoriented, the animation needs an explicit,
@@ -470,10 +479,15 @@ Output is:
     canonical_x_plus.png
     canonical_y_plus.png
     canonical_z_plus.png
+  sessions/                          # execute + --save-sessions only
+    canonical_x_plus.cxs
+    canonical_y_plus.cxs
+    canonical_z_plus.cxs
 ```
 
 The manifest records `C`, `S`, raw/scene axis vectors, screen bases, stage
-status, frame dimensions, completion checks, paths, warnings, and errors.
+status, frame dimensions, optional session-file validation, completion checks,
+paths, warnings, and errors.
 These are camera views of the original composite density, not transformed or
 resampled canonical maps.
 
@@ -677,15 +691,16 @@ logs/chimerax_render_status.json
 The generated renderer must:
 
 1. open the specified session;
-2. resolve the exact reference and moving model IDs;
-3. reject identical or ambiguous model matches;
-4. preserve both initial scene transforms;
+2. resolve every exact reference and moving model ID;
+3. reject missing, ambiguous, duplicate, or overlapping group members;
+4. preserve every initial scene transform;
 5. read the resolved per-frame RO/transform data;
-6. compute every moving-model pose from the saved baseline;
+6. compute every moving-model pose from its own saved baseline using one shared
+   absolute delta;
 7. export fixed-size PNG frames;
-8. verify the reference transform did not change;
+8. verify all stationary transforms and moving-group relative transforms;
 9. emit a structured log;
-10. close without modifying the source session.
+10. restore all moving transforms and close without modifying the source session.
 
 `execute` uses an argument list with `subprocess.run` and captures
 stdout/stderr. Linux headless mode invokes:
@@ -705,19 +720,20 @@ completion artifact.
 Normal CI must not require ChimeraX. Optional tests use a small asymmetric
 synthetic density and the `chimerax` marker.
 
-### 11.1 Dual structure views
+### 11.1 Multiple structure views
 
 **Implemented.**
 
-Dual view uses one trajectory and identical absolute model transforms in two
-sessions that differ only in camera or display styling. Both sessions must
-resolve the same model IDs and have matching initial reference and moving
-scene transforms; baseline RO, map frame, and pivot remain shared. A mismatch
+One, two, or three views use one trajectory and identical absolute model
+transforms in sessions that differ only in camera or display styling. All
+requested sessions must
+resolve the same model-ID groups and have matching initial transforms for every
+declared model; baseline RO, map frame, and pivot remain shared. A mismatch
 fails before composition.
 
 Each session writes and validates its own completion artifact and contiguous
-PNG sequence. Composition begins only after both succeed. Dual view supports
-`stacked` layout only and writes:
+PNG sequence. Composition begins only after all requested views succeed.
+Multiple views support `stacked` layout only and write:
 
 ```text
 chimerax/primary/
@@ -728,10 +744,38 @@ logs/chimerax_render_primary.log
 logs/chimerax_render_primary_status.json
 logs/chimerax_render_secondary.log
 logs/chimerax_render_secondary_status.json
+chimerax/tertiary/                 # three-view only
+frames/structure/tertiary/         # three-view only
+logs/chimerax_render_tertiary.log  # three-view only
+logs/chimerax_render_tertiary_status.json
 ```
 
-`script-only` writes both script sets but does not claim transform parity.
+`script-only` writes all requested script sets but does not claim transform parity.
 Source sessions are never overwritten. Single view retains its original paths.
+
+### 11.2 Rigid model groups
+
+Both model-ID options are repeatable. Each group must be non-empty, contain no
+duplicates, and be disjoint from the other group. IDs are resolved exactly in
+every session; missing or ambiguous IDs fail before rendering.
+
+Declared moving models are moving roots. Their ChimeraX descendants inherit
+the parent transform and are excluded from stationary checks; the renderer does
+not apply the delta to those descendants a second time. Declaring both a moving
+parent and its descendant is rejected, as is declaring a reference below a
+moving parent. All reference and otherwise undeclared scene models remain
+stationary. Every moving root receives the same per-frame scene-space delta
+from its own saved baseline:
+
+```text
+absolute_model_transform = pivot_delta * saved_model_baseline
+```
+
+This preserves the moving group's internal relative transforms. Independent
+motion among moving models is not supported. Completion requires per-model
+reference invariance, moving restoration, stationary-model invariance, and
+moving-group rigidity. Multi-view execution compares every declared model's
+initial transform across sessions.
 
 ---
 
@@ -845,34 +889,43 @@ uses a structure-first `stacked` layout by default:
 Exact rectangles, padding, gap, proportions, and layout name are recorded in
 the manifest.
 
-### 13.2 Dual-view stacked layout
+### 13.2 Multi-view stacked layout
 
 **Implemented.**
 
-When a secondary session is supplied, the upper structure region is split
-into equal primary and secondary rectangles with at most 1.5% canvas-width
-gap. Both use fixed aspect-preserving contain geometry. The landscape remains
+With two or three sessions, the upper structure region is split into equal
+rectangles with equal gaps of at most 1.5% canvas width. Every view uses fixed
+aspect-preserving contain geometry. The landscape remains
 full-width in the lower region. No titles, content-aware cropping, per-frame
 zoom, or dynamic geometry are added by default.
 
-Before composition, both input sequences must be contiguous, non-empty,
+Single and dual view retain the existing 64/36 structure/landscape split.
+Three view uses 58/42 to reduce unused upper-region height and enlarge the
+landscape strip.
+
+Before composition, every input sequence must be contiguous, non-empty,
 valid PNGs with stable dimensions and counts equal to `trajectory.csv`.
 Composite frames are validated again before encoding.
 
-### 13.3 Implemented fixed inward dual-view crop
+### 13.3 Implemented fixed inward multi-view crop
 
-Dual view may opt into:
+Two or three views may opt into:
 
 ```text
---dual-structure-horizontal-crop FRACTION
+--structure-horizontal-crop FRACTION
+--structure-vertical-crop FRACTION
 ```
 
-`FRACTION` is finite, defaults to `0`, and must satisfy `0 <= F < 0.5`.
-For `F > 0`, crop `F` from both horizontal sides of each validated structure
-frame, keep the full height, then place primary right-aligned and secondary
-left-aligned with the resolved dual-view gap. Crop rectangles and destinations
+Each fraction is finite, defaults to `0`, and must satisfy `0 <= F < 0.5`.
+Horizontal crop removes equal left/right fractions; vertical crop removes
+equal top/bottom fractions. Then place primary right-aligned and secondary
+left-aligned for two views. For three views, alignment is primary right,
+secondary center, tertiary left. Crop rectangles and destinations
 are resolved once and reused for all frames. Per-side crop pixels use
-deterministic half-up rounding of `source_width * FRACTION`.
+deterministic half-up rounding against the corresponding source dimension.
+
+`--dual-structure-horizontal-crop` remains a mutually exclusive compatibility
+alias for `--structure-horizontal-crop`.
 
 This is an explicit presentation crop, not automatic content detection.
 Source structure frames remain unchanged; there is no per-frame crop, stretch,
@@ -901,8 +954,8 @@ Landscape, structure, and composite frames are never automatically removed.
 
 `manifest.json` records at least:
 
-The implemented presentation-refinement contract uses animation manifest
-schema version `4`.
+The implemented rigid-model-group contract uses animation manifest schema
+version `8`.
 
 ```text
 schema_version
@@ -925,7 +978,8 @@ session_scene_basis
 raw_to_scene transform provenance when used
 pivot and pivot coordinate frame
 ChimeraX session path
-reference and moving model IDs
+reference/moving model-ID lists and counts
+shared rigid-group transform policy and per-model validation results
 trajectory policies
 fps and frame count
 display filter and resolved SLD field
@@ -939,7 +993,7 @@ trajectory/landscape/script/structure stage statuses
 ChimeraX return code
 compositor layout/version, regions, fractions, destinations, and frame validation
 structure view count, session paths, per-view destinations and validation
-dual-view crop fraction, source crop rectangles, inward alignment, and gap
+horizontal/vertical crop fractions, source crop rectangles, alignment, and equal gap
 FFmpeg arguments and return code
 FFprobe payload, validation method, and return code
 output paths
@@ -966,8 +1020,12 @@ Fail clearly for:
 - unresolved session scene basis or raw-to-scene transform;
 - an invalid baseline declaration;
 - missing session or model IDs;
-- identical reference and moving model IDs;
-- mismatched initial model transforms across requested dual-view sessions;
+- duplicate IDs within a group or overlap between groups;
+- any declared ID that does not resolve exactly once;
+- changed reference/stationary transforms, failed moving restoration, or lost
+  moving-group rigidity;
+- tertiary session without secondary session;
+- mismatched initial model transforms across requested multi-view sessions;
 - invalid pivot;
 - missing executables required by the selected mode;
 - non-finite rotation or scene transforms;
@@ -1058,9 +1116,10 @@ optional local integration validation.
 
 ### Presentation follow-up
 
-**Planned.** Tighten projection spacing and dynamic overlays, then add an
-optional two-session structure view without changing trajectory, transform,
-display-selection, or encoding semantics.
+**Implemented.** Projection spacing and dynamic overlays are refined; optional
+secondary and tertiary sessions provide two or three synchronized structure
+views without changing trajectory, transform, display-selection, or encoding
+semantics.
 
 ---
 
@@ -1094,12 +1153,12 @@ geometry, one coordinate-only annotation block, a shared colorbar, fixed
 stacked destination rectangles, and `side_by_side` compatibility.
 
 Focused tests cover the tighter gap, resolution-scaled marker and coordinate
-text, unchanged display-row selection, optional secondary-session parsing,
+text, unchanged display-row selection, optional secondary/tertiary parsing,
 matching initial model transforms, independent renderer completion,
-synchronized frame counts, fixed dual destinations, and rejection of dual view
-with `side_by_side`.
+synchronized frame counts, fixed two/three-view destinations, and rejection of
+multiple views with `side_by_side`.
 
-Focused tests cover crop validation, fixed crop/destination geometry, inward
+Focused tests cover horizontal/vertical crop validation, fixed crop/destination geometry, inward
 alignment, unchanged source frames, single-view compatibility, and visible
 `SLD` colorbar text while retaining the underlying `sld_display` field.
 

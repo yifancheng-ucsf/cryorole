@@ -28,6 +28,7 @@ from cryorole.io.writers.landscape_store import (
 from cryorole.models.canonicalization_report import CanonicalizationReport
 from cryorole.models.density_report import DensityReport
 from cryorole.models.landscape import Landscape
+from cryorole.models.match_table import MatchReport
 from cryorole.models.policies import SelectionExportPolicy, SelectionPolicy
 from cryorole.models.selection import Selection
 
@@ -41,18 +42,20 @@ class FakeRunner:
         return SimpleNamespace(
             pose_a=SimpleNamespace(data=pd.DataFrame({"particle_key": ["p1", "p2", "p3"]})),
             pose_b=SimpleNamespace(data=pd.DataFrame({"particle_key": ["p1", "p2", "p3"]})),
-            match_report={
-                "matched_count": 3,
-                "status": "ok",
-                "match_key": "uid",
-                "ref_row_count": 3,
-                "mov_row_count": 3,
-                "matched_row_count": 3,
-                "dropped_ref_only_count": 0,
-                "dropped_mov_only_count": 0,
-                "matched_rows_reordered": False,
-                "warnings": (),
-            },
+            match_report=MatchReport(
+                matched_count=3,
+                unmatched_a=0,
+                unmatched_b=0,
+                overlap_ratio=1.0,
+                status="ok",
+                match_key="uid",
+                ref_row_count=3,
+                mov_row_count=3,
+                matched_row_count=3,
+                ref_coverage=1.0,
+                mov_coverage=1.0,
+                overlap_smaller_input=1.0,
+            ),
         )
 
     def compute_ro_for_phase1_result(self, phase1, **kwargs):
@@ -233,7 +236,9 @@ def test_run_cli_rejects_removed_percentile_sld_display_arguments() -> None:
         )
 
 
-def _make_density_report() -> DensityReport:
+def _make_density_report(sld_values: list[float] | None = None) -> DensityReport:
+    values = np.asarray(sld_values or [1.0, 1.0, 1.0], dtype=float)
+    n_high = int((values > 100.0).sum())
     return DensityReport(
         n_points=3,
         requested_k_neighbors=2,
@@ -245,14 +250,24 @@ def _make_density_report() -> DensityReport:
         fraction_floored_points=0.0,
         n_inf_sld_unfloored=0,
         n_inf_sld_raw=0,
-        max_sld_unfloored=1.0,
-        max_sld_raw=1.0,
-        p99_sld_unfloored=1.0,
-        p99_sld_raw=1.0,
+        max_sld_unfloored=float(values.max()),
+        max_sld_raw=float(values.max()),
+        p99_sld_unfloored=float(np.percentile(values, 99)),
+        p99_sld_raw=float(np.percentile(values, 99)),
         max_over_p99_unfloored=1.0,
         max_over_p99_raw=1.0,
         floored_particle_keys=(),
         floored_rows=(),
+        n_high_sld_points=n_high,
+        fraction_high_sld_points=float(n_high / len(values)),
+        warning_codes=(("HIGH_SLD_PRESENT",) if n_high else ()),
+        warnings=(
+            (
+                f"[HIGH_SLD_PRESENT] {n_high}/{len(values)} particles have "
+                "sld_raw > 100; Quick-look colors saturate above SLD 100; "
+                "stored values are unchanged."
+            ),
+        ) if n_high else (),
     )
 
 
@@ -284,7 +299,7 @@ def _make_landscape(sld_values: list[float] | None = None) -> Landscape:
     return Landscape(
         data=data,
         active_policies={},
-        density_report=_make_density_report(),
+        density_report=_make_density_report(sld_values),
     )
 
 
@@ -410,6 +425,16 @@ EXPECTED_DEFAULT_VISUALIZATION_FILES = (
     "visualization_report.json",
 )
 
+EXPECTED_RUN_QUICKLOOK_FILES = {
+    "all_euler_3view_projection.png",
+    "all_rotvec_3view_projection.png",
+    "sld_ge_1_euler_3view_projection.png",
+    "sld_ge_1_rotvec_3view_projection.png",
+    "top_40pct_euler_3view_projection.png",
+    "top_40pct_rotvec_3view_projection.png",
+    "sld_log_distribution.png",
+}
+
 
 def _assert_default_visualization_group(group_dir: Path) -> dict:
     for filename in EXPECTED_DEFAULT_VISUALIZATION_FILES:
@@ -503,7 +528,9 @@ def test_run_command_writes_landscape_density_report_and_manifest(tmp_path) -> N
     assert (output_dir / "reports" / "density_report.json").exists()
     assert (output_dir / "reports" / "match_report.json").exists()
     assert (output_dir / "run_summary.json").exists()
-    assert (output_dir / "visualizations" / "raw_default" / "visualization_report.json").exists()
+    assert (output_dir / "run_report.md").exists()
+    quicklook_dir = output_dir / "visualizations" / "quicklook"
+    assert {path.name for path in quicklook_dir.iterdir()} == EXPECTED_RUN_QUICKLOOK_FILES
     assert (output_dir / "run_manifest.json").exists()
     assert not (output_dir / "landscape.json").exists()
     raw = pd.read_csv(output_dir / "data" / "raw_landscape.csv")
@@ -525,17 +552,9 @@ def test_run_command_writes_landscape_density_report_and_manifest(tmp_path) -> N
     assert expected_columns.issubset(raw.columns)
     assert len(raw) == 3
     assert not any("intrinsic" in column or "extrinsic" in column for column in raw.columns)
-    visualization_report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "all_particles"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert visualization_report["euler_convention"] == "extrinsic_zyx"
-    assert visualization_report["scipy_euler_sequence"] == "zyx"
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["euler_convention"] == "extrinsic_zyx"
+    assert summary["scipy_euler_sequence"] == "zyx"
 
 
 def test_run_debug_landscape_json_is_opt_in(tmp_path) -> None:
@@ -590,16 +609,20 @@ def test_run_manifest_records_resolved_cryosparc_uid_and_core_policies(tmp_path)
     assert "canonicalization_policy" not in active_policies
     assert manifest["results"]["euler_metadata"]["euler_convention"] == "extrinsic_zyx"
     assert manifest["output_artifacts"]["run_summary_json"] == str(output_dir / "run_summary.json")
-    assert manifest["schema_version"] == "2.0"
+    assert manifest["schema_version"] == "3.0"
     assert manifest["output_artifacts"]["raw_landscape_npz"] == str(
         output_dir / "data" / "raw_landscape.npz"
     )
     assert manifest["output_artifacts"]["raw_landscape_csv"] == str(
         output_dir / "data" / "raw_landscape.csv"
     )
-    assert manifest["output_artifacts"]["visualization_report_json"] == str(
-        output_dir / "visualizations" / "raw_default" / "visualization_report.json"
+    assert manifest["output_artifacts"]["raw_quicklook_all_analysis_euler_projection_2d_png"] == str(
+        output_dir / "visualizations" / "quicklook" / "all_euler_3view_projection.png"
     )
+    assert manifest["output_artifacts"]["raw_quicklook_sld_log_distribution_png"] == str(
+        output_dir / "visualizations" / "quicklook" / "sld_log_distribution.png"
+    )
+    assert manifest["output_artifacts"]["run_report_md"] == str(output_dir / "run_report.md")
 
 
 def test_run_summary_contains_counts_and_canonicalization_status(tmp_path) -> None:
@@ -644,12 +667,17 @@ def test_run_summary_contains_counts_and_canonicalization_status(tmp_path) -> No
     assert summary["raw_csv_chunk_size"] == 100000
     assert summary["raw_visualization_performed"] is True
     assert summary["raw_visualization_style"] == "legacy_rainbow"
-    assert summary["raw_visualization_preview_groups"] == [
-        "all_particles",
-        "filter_particles_by_sld_gt_1p5",
-    ]
-    assert summary["raw_visualization_sld_preview_cutoff"] == 1.5
+    assert summary["raw_visualization_profile"] == "quicklook"
+    assert {
+        Path(path).name for path in summary["raw_visualization_files"]
+    } == EXPECTED_RUN_QUICKLOOK_FILES
+    assert summary["raw_visualization_representation"] == "euler_and_rotvec_3view"
+    assert summary["raw_visualization_filter"] == "all_sld_ge_1_top_40pct"
     assert summary["raw_visualization_display_vmax_cap"] == 100.0
+    assert summary["raw_visualization_rendered_points"] == 3
+    assert summary["raw_visualization_sampling_method"] == (
+        "deterministic_random_without_replacement"
+    )
     assert summary["density_backend"] == "current_dataframe_compat"
     assert summary["density_query_batch_size"] == 100000
     assert summary["timing_profile_performed"] is False
@@ -737,12 +765,12 @@ def test_run_no_visualize_skips_raw_visualization_artifacts(tmp_path) -> None:
 
     run_command(args, runner=FakeRunner())
 
-    assert not (output_dir / "visualizations" / "raw_default" / "visualization_report.json").exists()
-    assert not (output_dir / "visualizations" / "raw_default" / "all_particles").exists()
-    assert not (output_dir / "visualizations" / "raw_default" / "filter_particles_by_sld_gt_1p5").exists()
+    assert not (output_dir / "visualizations" / "quicklook").exists()
     summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["raw_visualization_performed"] is False
-    assert "visualization_report_json" not in summary["output_artifacts"]
+    assert not any(key.startswith("raw_quicklook_") for key in summary["output_artifacts"])
+    report = (output_dir / "run_report.md").read_text(encoding="utf-8")
+    assert "Quick-look was disabled" in report
 
 
 def test_run_profile_time_writes_timing_profile(tmp_path) -> None:
@@ -880,7 +908,7 @@ def test_run_positive_integer_controls_reject_zero(option) -> None:
         )
 
 
-def test_run_array_native_backend_fails_clearly(tmp_path) -> None:
+def test_run_array_native_request_remains_compatible_with_injected_reference_runner(tmp_path) -> None:
     output_dir = tmp_path / "run"
     parser = build_parser()
     args = parser.parse_args(
@@ -897,70 +925,30 @@ def test_run_array_native_backend_fails_clearly(tmp_path) -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="array_native is not implemented"):
-        run_command(args, runner=FakeRunner())
+    assert run_command(args, runner=FakeRunner()) == 0
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["run_backend_requested"] == "array_native"
+    assert summary["run_backend_resolved"] == "dataframe_compat"
 
 
-def test_visualization_report_is_ok_and_records_display_color_field(tmp_path) -> None:
+def test_run_quicklook_is_seven_pngs_and_records_display_policy(tmp_path) -> None:
     output_dir = tmp_path / "run"
     parser = build_parser()
     args = parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(output_dir)])
 
     run_command(args, runner=FakeRunner())
 
-    report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert report["artifact_type"] == "run_default_visualization_report"
-    assert report["preview_only"] is True
-    assert report["not_a_selection"] is True
-    assert report["visual_style"] == "legacy_rainbow"
-    assert report["color_field"] == "sld_raw"
-    assert report["sld_preview_cutoff"] == 1.5
-    assert report["display_vmax_cap"] == 100.0
-    assert report["preview_groups"] == [
-        "all_particles",
-        "filter_particles_by_sld_gt_1p5",
-    ]
-
-    all_report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "all_particles"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert all_report["backend"] == "matplotlib_static"
-    assert all_report["color_field"] == "sld_raw"
-    assert all_report["display_filter_mode"] == "none"
-    assert all_report["display_vmax_cap"] == 100.0
-    assert all_report["max_displayed_sld"] == 1.0
-    assert all_report["resolved_vmax"] == 1.0
-    assert all_report["display_color_vmax"] == 1.0
-    assert all_report["full_landscape_table"] == "data/raw_landscape.csv"
-    assert all_report["display_table_filename"] == "display_table.csv"
-
-    threshold_report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "filter_particles_by_sld_gt_1p5"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert threshold_report["display_filter_mode"] == "threshold"
-    assert threshold_report["display_sld_threshold"] == 1.5
-    assert threshold_report["display_vmax_cap"] == 100.0
-    assert threshold_report["max_displayed_sld"] is None
-    assert threshold_report["resolved_vmax"] is None
+    quicklook_dir = output_dir / "visualizations" / "quicklook"
+    assert {path.name for path in quicklook_dir.iterdir()} == EXPECTED_RUN_QUICKLOOK_FILES
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["raw_visualization_profile"] == "quicklook"
+    assert summary["raw_visualization_filter"] == "all_sld_ge_1_top_40pct"
+    assert summary["display_filtering"]["display_density_field"] == "sld_raw"
+    assert summary["display_filtering"]["display_filter_mode"] == "fixed_quicklook_ranges"
+    assert summary["display_filtering"]["display_sld_threshold"] == 1.0
+    assert summary["display_filtering"]["display_top_fraction"] == 0.40
+    assert summary["raw_visualization_max_displayed_sld"] == 1.0
+    assert summary["raw_visualization_resolved_vmax"] == 1.0
 
 
 def test_run_preview_resolved_vmax_caps_only_above_100(tmp_path) -> None:
@@ -970,149 +958,62 @@ def test_run_preview_resolved_vmax_caps_only_above_100(tmp_path) -> None:
 
     run_command(args, runner=HighSldRunner())
 
-    all_report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "all_particles"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-    threshold_report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "filter_particles_by_sld_gt_1p5"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-
-    assert all_report["max_displayed_sld"] == 150.0
-    assert all_report["resolved_vmax"] == 100.0
-    assert all_report["display_color_vmax"] == 100.0
-    assert threshold_report["max_displayed_sld"] == 150.0
-    assert threshold_report["resolved_vmax"] == 100.0
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["raw_visualization_max_displayed_sld"] == 150.0
+    assert summary["raw_visualization_resolved_vmax"] == 100.0
 
 
-def test_run_writes_expected_figure_artifacts_and_no_projection_csvs_by_default(tmp_path) -> None:
+def test_run_writes_only_seven_quicklook_figure_artifacts(tmp_path) -> None:
     output_dir = tmp_path / "run"
     parser = build_parser()
     args = parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(output_dir)])
 
     run_command(args, runner=FakeRunner())
 
-    expected = [
-        "display_table.csv",
-        "euler_alpha_beta.png",
-        "euler_beta_gamma.png",
-        "euler_alpha_gamma.png",
-        "euler_3view_projection.png",
-        "rotvec_xy.png",
-        "rotvec_yz.png",
-        "rotvec_xz.png",
-        "rotvec_3view_projection.png",
-        "landscape_3d_euler.png",
-        "landscape_3d_rotvec.png",
-    ]
-    for group in ("all_particles", "filter_particles_by_sld_gt_1p5"):
-        group_dir = output_dir / "visualizations" / "raw_default" / group
-        for filename in expected:
-            assert (group_dir / filename).exists()
-        assert not (group_dir / "analysis_projection_xy.csv").exists()
-        assert not (group_dir / "euler_alpha_beta.svg").exists()
-        assert not (group_dir / "euler_alpha_beta.pdf").exists()
+    quicklook_dir = output_dir / "visualizations" / "quicklook"
+    assert {path.name for path in quicklook_dir.iterdir()} == EXPECTED_RUN_QUICKLOOK_FILES
 
 
-def test_run_output_formats_alias_writes_requested_formats(tmp_path) -> None:
+def test_run_report_is_compact_and_explains_outputs(tmp_path) -> None:
     output_dir = tmp_path / "run"
     parser = build_parser()
     args = parser.parse_args(
-        [
-            "run",
-            "--ref",
-            "ref.cs",
-            "--mov",
-            "mov.cs",
-            "--output-dir",
-            str(output_dir),
-            "--output-formats",
-            "png,pdf,svg",
-        ]
+        ["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(output_dir)]
     )
 
-    run_command(args, runner=FakeRunner())
+    run_command(args, runner=HighSldRunner())
 
-    visualization_dir = output_dir / "visualizations" / "raw_default" / "all_particles"
-    assert (visualization_dir / "euler_alpha_beta.png").exists()
-    assert (visualization_dir / "euler_alpha_beta.pdf").exists()
-    assert (visualization_dir / "euler_alpha_beta.svg").exists()
+    report = (output_dir / "run_report.md").read_text(encoding="utf-8")
+    assert len(report.splitlines()) <= 70
+    assert "data/raw_landscape.npz" in report
+    assert "visualizations/quicklook/sld_log_distribution.png" in report
+    assert "HIGH_SLD_PRESENT" in report
+    assert "Colors saturate above SLD 100" in report
+    assert "cryorole status --run-dir ." in report
 
 
-def test_run_write_projection_csvs_writes_debug_projection_csvs(tmp_path) -> None:
-    output_dir = tmp_path / "run"
+def test_run_rejects_legacy_output_format_control() -> None:
     parser = build_parser()
-    args = parser.parse_args(
-        [
-            "run",
-            "--ref",
-            "ref.cs",
-            "--mov",
-            "mov.cs",
-            "--output-dir",
-            str(output_dir),
-            "--write-projection-csvs",
-        ]
-    )
-
-    run_command(args, runner=FakeRunner())
-
-    assert (
-        output_dir
-        / "visualizations"
-        / "raw_default"
-        / "all_particles"
-        / "analysis_projection_xy.csv"
-    ).exists()
-    assert (
-        output_dir
-        / "visualizations"
-        / "raw_default"
-        / "all_particles"
-        / "analysis_euler_projection_alpha_beta.csv"
-    ).exists()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-formats", "pdf"]
+        )
 
 
-def test_run_display_filter_does_not_change_complete_landscape_outputs(tmp_path) -> None:
-    output_dir = tmp_path / "run"
+def test_run_rejects_legacy_projection_csv_control() -> None:
     parser = build_parser()
-    args = parser.parse_args(
-        [
-            "run",
-            "--ref",
-            "ref.cs",
-            "--mov",
-            "mov.cs",
-            "--output-dir",
-            str(output_dir),
-            "--display-top-fraction",
-            "0.34",
-        ]
-    )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["run", "--ref", "ref.cs", "--mov", "mov.cs", "--write-projection-csvs"]
+        )
 
-    run_command(args, runner=FakeRunner())
 
-    raw = pd.read_csv(output_dir / "data" / "raw_landscape.csv")
-    display = pd.read_csv(
-        output_dir
-        / "visualizations"
-        / "raw_default"
-        / "filter_particles_by_sld_gt_1p5"
-        / "display_table.csv"
-    )
-    assert len(raw) == 3
-    assert len(display) == 0
+def test_run_rejects_legacy_display_filter_control() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["run", "--ref", "ref.cs", "--mov", "mov.cs", "--display-top-fraction", "0.34"]
+        )
 
 
 def test_run_command_does_not_select_or_canonicalize_by_default(tmp_path) -> None:
@@ -1146,22 +1047,14 @@ def test_run_command_canonicalizes_only_when_requested(tmp_path) -> None:
     assert "canonicalize_density_result" in call_names
     canonicalize_call = next(call for call in runner.calls if call[0] == "canonicalize_density_result")
     assert canonicalize_call[2].sign_rule == "density_weighted_skewness"
-    assert canonicalize_call[2].positive_side == "high_density_skew"
+    assert canonicalize_call[2].positive_side == "low_density_skew"
     canonical_dir = output_dir / "canonical" / "default"
     assert (canonical_dir / "canonical_landscape.npz").exists()
     assert (canonical_dir / "canonical_landscape.csv").exists()
     assert (canonical_dir / "canonicalization_report.json").exists()
     assert not (canonical_dir / "visualizations").exists()
-    report = json.loads(
-        (
-            output_dir
-            / "visualizations"
-            / "raw_default"
-            / "all_particles"
-            / "visualization_report.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert report["coordinate_source_resolved"] == ["analysis"]
+    quicklook_dir = output_dir / "visualizations" / "quicklook"
+    assert {path.name for path in quicklook_dir.iterdir()} == EXPECTED_RUN_QUICKLOOK_FILES
     summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["canonicalization_performed"] is True
     assert "canonical_visualization_report_json" not in summary["output_artifacts"]
@@ -1194,15 +1087,16 @@ def test_visualize_resolves_landscape_from_run_dir(tmp_path) -> None:
     assert report["visual_id"] == "default"
     assert report["space"] == "raw"
     assert report["display_density_field"] == "sld_display"
-    assert (output_dir / "display_table.csv").exists()
+    assert report["requested_views"] == ["2d"]
+    assert report["display_filter_mode"] == "threshold"
+    assert report["display_sld_threshold"] == 1.0
     assert (output_dir / "euler_3view_projection.png").exists()
-    assert (output_dir / "landscape_3d_euler.png").exists()
     assert (output_dir / "rotvec_3view_projection.png").exists()
-    assert (output_dir / "landscape_3d_rotvec.png").exists()
-    assert (output_dir / "distributions_1d" / "distribution_1d_report.json").exists()
-    assert (output_dir / "distributions_1d" / "distribution_1d_stats.csv").exists()
-    assert (output_dir / "distributions_1d" / "euler_alpha_distribution.png").exists()
-    assert (output_dir / "distributions_1d" / "rotvec_x_distribution.png").exists()
+    assert {path.name for path in output_dir.iterdir()} == {
+        "euler_3view_projection.png",
+        "rotvec_3view_projection.png",
+        "visualization_report.json",
+    }
 
 
 def test_run_canonicalize_accepts_low_density_skew_positive_side(tmp_path) -> None:
@@ -1244,24 +1138,30 @@ def test_visualize_help_shows_compact_public_surface(capsys) -> None:
         "--selection-id",
         "--use-selected-landscape",
         "--visual-id",
+        "--view",
         "--representation",
         "--colormap",
         "--range",
         "--top-fraction",
-        "--threshold",
-        "--formats",
+        "--sld-threshold",
+        "--all",
+        "--format",
         "--vmin",
         "--vmax",
+        "--point-size",
+        "--alpha",
+        "--axis-limit",
+        "--max-points",
         "--bins",
         "--hist-mode",
+        "--kde",
         "--kde-bandwidth",
-        "--xlim",
-        "--ylim",
+        "--3d-mode",
         "--overwrite",
     ):
         assert public_option in help_text
-    assert "Default: 72" in help_text
-    assert "Default: scott" in help_text
+    assert "Comma-separated views to generate" in help_text
+    assert "Default: auto" in help_text
     for removed_option in (
         "--output-dir",
         "--landscape",
@@ -1279,7 +1179,6 @@ def test_visualize_help_shows_compact_public_surface(capsys) -> None:
         "--color-map",
         "--color-vmin",
         "--color-vmax",
-        "--point-size",
         "--point-alpha",
         "--figure-width",
         "--figure-height",
@@ -1322,7 +1221,7 @@ def test_visualize_visual_id_controls_raw_output_path(tmp_path) -> None:
     visualize_command(args)
 
     output_dir = run_dir / "visualizations" / "raw" / "abc"
-    assert (output_dir / "display_table.csv").exists()
+    assert (output_dir / "euler_3view_projection.png").exists()
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
     assert report["visual_id"] == "abc"
 
@@ -1344,13 +1243,12 @@ def test_visualize_canonical_writes_compact_path(tmp_path) -> None:
     visualize_command(args)
 
     output_dir = run_dir / "visualizations" / "canonical" / "default" / "default"
-    assert (output_dir / "display_table.csv").exists()
     assert (output_dir / "euler_3view_projection.png").exists()
     assert not (run_dir / "visualizations" / "canonical" / "default" / "views").exists()
     assert not (run_dir / "canonical" / "default" / "visualizations" / "default").exists()
 
 
-def test_visualize_representation_controls_2d_3d_and_1d_outputs(tmp_path) -> None:
+def test_visualize_representation_controls_requested_2d_and_1d_outputs(tmp_path) -> None:
     run_dir = tmp_path / "run"
     parser = build_parser()
     run_command(
@@ -1358,22 +1256,22 @@ def test_visualize_representation_controls_2d_3d_and_1d_outputs(tmp_path) -> Non
         runner=FakeRunner(),
     )
     args = parser.parse_args(
-        ["visualize", "--run-dir", str(run_dir), "--representation", "rotvec", "--visual-id", "rot"]
+        [
+            "visualize", "--run-dir", str(run_dir), "--representation", "rotvec",
+            "--view", "2d,1d", "--visual-id", "rot",
+        ]
     )
 
     visualize_command(args)
 
     output_dir = run_dir / "visualizations" / "raw" / "rot"
-    display = pd.read_csv(output_dir / "display_table.csv")
-    assert {"rotvec_x", "rotvec_y", "rotvec_z"}.issubset(display.columns)
-    assert "euler_alpha" not in display.columns
     assert (output_dir / "rotvec_3view_projection.png").exists()
     assert not (output_dir / "euler_3view_projection.png").exists()
-    assert (output_dir / "distributions_1d" / "rotvec_x_distribution.png").exists()
-    assert not (output_dir / "distributions_1d" / "euler_alpha_distribution.png").exists()
+    assert (output_dir / "rotvec_1d_distribution.png").exists()
+    assert not (output_dir / "euler_1d_distribution.png").exists()
 
 
-def test_visualize_formats_apply_to_2d_3d_and_1d_outputs(tmp_path) -> None:
+def test_visualize_formats_apply_to_requested_static_outputs(tmp_path) -> None:
     run_dir = tmp_path / "run"
     parser = build_parser()
     run_command(
@@ -1389,7 +1287,9 @@ def test_visualize_formats_apply_to_2d_3d_and_1d_outputs(tmp_path) -> None:
             "euler",
             "--visual-id",
             "formats",
-            "--formats",
+            "--view",
+            "2d,1d",
+            "--format",
             "png,svg,pdf",
         ]
     )
@@ -1400,8 +1300,8 @@ def test_visualize_formats_apply_to_2d_3d_and_1d_outputs(tmp_path) -> None:
     assert (output_dir / "euler_3view_projection.png").exists()
     assert (output_dir / "euler_3view_projection.svg").exists()
     assert (output_dir / "euler_3view_projection.pdf").exists()
-    assert (output_dir / "distributions_1d" / "euler_alpha_distribution.svg").exists()
-    assert (output_dir / "distributions_1d" / "euler_alpha_distribution.pdf").exists()
+    assert (output_dir / "euler_1d_distribution.svg").exists()
+    assert (output_dir / "euler_1d_distribution.pdf").exists()
 
 
 def test_visualize_range_filters_display_rows_without_modifying_parent(tmp_path) -> None:
@@ -1429,14 +1329,13 @@ def test_visualize_range_filters_display_rows_without_modifying_parent(tmp_path)
     visualize_command(args)
 
     output_dir = run_dir / "visualizations" / "raw" / "range"
-    display = pd.read_csv(output_dir / "display_table.csv")
-    assert display["particle_key"].tolist() == ["p2"]
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
     assert report["display_range_filter_applied"] is True
+    assert report["n_points_after_display_filter"]["analysis"] == 1
     assert (run_dir / "data" / "raw_landscape.npz").read_bytes() == parent_before
 
 
-def test_visualize_euler_range_sets_matching_axis_viewport(tmp_path) -> None:
+def test_visualize_range_filters_rows_without_implicitly_changing_viewport(tmp_path) -> None:
     run_dir = tmp_path / "run"
     parser = build_parser()
     run_command(
@@ -1466,9 +1365,8 @@ def test_visualize_euler_range_sets_matching_axis_viewport(tmp_path) -> None:
     output_dir = run_dir / "visualizations" / "raw" / "euler_range"
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
     assert report["display_range_filter_applied"] is True
-    assert report["axis_limits"]["alpha"] == [-20.0, 20.0]
-    assert report["axis_limits"]["beta"] == [-20.0, 20.0]
-    assert report["axis_limits"]["gamma"] == [-30.0, 30.0]
+    assert report["axis_limits"] == {}
+    assert report["range_bounds"]["alpha"] == [-20.0, 20.0]
 
 
 def test_visualize_density_filters_and_colormap_are_recorded(tmp_path) -> None:
@@ -1516,12 +1414,13 @@ def test_visualize_rejects_filter_conflict(tmp_path) -> None:
         parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(run_dir)]),
         runner=FakeRunner(),
     )
-    conflict = parser.parse_args(
-        ["visualize", "--run-dir", str(run_dir), "--top-fraction", "0.5", "--threshold", "1.5"]
-    )
-
-    with pytest.raises(ValueError, match="Use only one display density filter"):
-        visualize_command(conflict)
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "visualize", "--run-dir", str(run_dir), "--top-fraction", "0.5",
+                "--sld-threshold", "1.5",
+            ]
+        )
 
 
 def test_visualize_1d_distribution_options_are_recorded(tmp_path) -> None:
@@ -1538,37 +1437,33 @@ def test_visualize_1d_distribution_options_are_recorded(tmp_path) -> None:
             str(run_dir),
             "--visual-id",
             "one_d",
+            "--view",
+            "1d",
             "--bins",
             "12",
             "--hist-mode",
             "percent",
+            "--kde",
             "--kde-bandwidth",
             "silverman",
-            "--xlim=-180:180",
-            "--ylim",
-            "0:100",
+            "--axis-limit",
+            "alpha:-180:180",
         ]
     )
 
     visualize_command(args)
 
-    dist_dir = run_dir / "visualizations" / "raw" / "one_d" / "distributions_1d"
-    report = json.loads((dist_dir / "distribution_1d_report.json").read_text(encoding="utf-8"))
-    stats = pd.read_csv(dist_dir / "distribution_1d_stats.csv")
-    assert report["bins"] == 12
-    assert report["hist_mode"] == "percent"
-    assert report["kde_bandwidth"] == "silverman"
-    assert report["xlim"] == [-180.0, 180.0]
-    assert report["ylim"] == [0.0, 100.0]
-    assert {"axis", "n", "min", "max", "median", "q05", "q25", "q75", "q95", "kde_status"}.issubset(stats.columns)
-    assert set(report["generated_axes"]) == {
-        "euler_alpha",
-        "euler_beta",
-        "euler_gamma",
-        "rotvec_x",
-        "rotvec_y",
-        "rotvec_z",
-    }
+    output_dir = run_dir / "visualizations" / "raw" / "one_d"
+    report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
+    policy = report["distribution_1d_policy"]
+    assert policy["bins"] == 12
+    assert policy["hist_mode"] == "percent"
+    assert policy["kde"] is True
+    assert policy["kde_bandwidth"] == "silverman"
+    assert report["axis_limits"]["alpha"] == [-180.0, 180.0]
+    assert (output_dir / "euler_1d_distribution.png").exists()
+    assert (output_dir / "rotvec_1d_distribution.png").exists()
+    assert not (output_dir / "euler_3view_projection.png").exists()
 
 
 def test_visualize_rejects_invalid_1d_options(tmp_path) -> None:
@@ -1580,9 +1475,39 @@ def test_visualize_rejects_invalid_1d_options(tmp_path) -> None:
     )
     with pytest.raises(SystemExit):
         parser.parse_args(["visualize", "--run-dir", str(run_dir), "--hist-mode", "density"])
-    args = parser.parse_args(["visualize", "--run-dir", str(run_dir), "--kde-bandwidth", "bad"])
+    args = parser.parse_args(
+        [
+            "visualize", "--run-dir", str(run_dir), "--view", "1d", "--kde",
+            "--kde-bandwidth", "bad",
+        ]
+    )
     with pytest.raises(ValueError, match="--kde-bandwidth"):
         visualize_command(args)
+
+
+def test_visualize_writes_offline_interactive_3d_only_when_requested(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    parser = build_parser()
+    run_command(
+        parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(run_dir)]),
+        runner=FakeRunner(),
+    )
+
+    visualize_command(
+        parser.parse_args(
+            ["visualize", "--run-dir", str(run_dir), "--view", "3d", "--visual-id", "three_d"]
+        )
+    )
+
+    output_dir = run_dir / "visualizations" / "raw" / "three_d"
+    html = (output_dir / "landscape_3d.html").read_text(encoding="utf-8")
+    report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
+    assert "http://" not in html and "https://" not in html
+    assert "cannot create a Selection" in html
+    assert not (output_dir / "euler_3view_projection.png").exists()
+    assert report["requested_views"] == ["3d"]
+    assert report["three_d_policy"]["selection_enabled"] is False
+    assert report["view_reports"]["3d"]["offline"] is True
 
 
 def test_visualize_selection_id_filters_raw_landscape_from_selected_keys_csv(tmp_path) -> None:
@@ -1616,8 +1541,6 @@ def test_visualize_selection_id_filters_raw_landscape_from_selected_keys_csv(tmp
     visualize_command(args)
 
     output_dir = run_dir / "visualizations" / "selections" / "subset" / "parent_raw" / "default"
-    display = pd.read_csv(output_dir / "display_table.csv")
-    assert display["particle_key"].tolist() == ["p1", "p3"]
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
     assert report["selection_id"] == "subset"
     assert report["selected_count"] == 2
@@ -1628,6 +1551,7 @@ def test_visualize_selection_id_filters_raw_landscape_from_selected_keys_csv(tmp
     assert report["missing_selected_key_count"] == 0
     assert report["selection_source_path"].endswith("selected_particle_keys.csv")
     assert report["n_points_input"] == 2
+    assert report["n_points_after_display_filter"]["analysis"] == 2
 
 
 def test_visualize_can_use_selected_derived_landscape(tmp_path) -> None:
@@ -1673,7 +1597,6 @@ def test_visualize_can_use_selected_derived_landscape(tmp_path) -> None:
 
     output_dir = run_dir / "visualizations" / "selections" / "random-subset" / "selected_landscape" / "default"
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
-    display = pd.read_csv(output_dir / "display_table.csv")
     assert report["selection_id"] == "random-subset"
     assert report["selected_landscape_used"] is True
     assert report["selection_filter_applied"] is False
@@ -1682,7 +1605,7 @@ def test_visualize_can_use_selected_derived_landscape(tmp_path) -> None:
     selected_landscape_path = Path(report["selected_landscape_path"])
     assert selected_landscape_path.name == "landscape.npz"
     assert selected_landscape_path.parent.name == "selected_landscape"
-    assert report["n_points_input"] == len(display)
+    assert report["n_points_input"] == report["selected_count"]
 
 
 def test_visualize_selected_derived_landscape_inherits_canonical_space(tmp_path) -> None:
@@ -1738,7 +1661,9 @@ def test_visualize_selected_derived_landscape_inherits_canonical_space(tmp_path)
                 "--selection-id",
                 "canonical-subset",
                 "--use-selected-landscape",
-                "--formats",
+                "--view",
+                "1d",
+                "--format",
                 "png",
             ]
         )
@@ -1746,11 +1671,10 @@ def test_visualize_selected_derived_landscape_inherits_canonical_space(tmp_path)
 
     output_dir = run_dir / "visualizations" / "selections" / "canonical-subset" / "selected_landscape" / "default"
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
-    display = pd.read_csv(output_dir / "display_table.csv")
     assert report["space"] == "canonical"
     assert report["selected_landscape_coordinate_space"] == "canonical"
-    assert set(display["coordinate_source"]) == {"canonical"}
-    assert display["rotvec_z"].max() == 3.0
+    assert report["coordinate_source_resolved"] == ["canonical"]
+    assert report["view_reports"]["1d"]["statistics"]["rotvec_z"]["max"] == 3.0
 
 
 def test_visualize_selection_id_falls_back_to_selection_json(tmp_path) -> None:
@@ -1781,12 +1705,11 @@ def test_visualize_selection_id_falls_back_to_selection_json(tmp_path) -> None:
     visualize_command(args)
 
     output_dir = run_dir / "visualizations" / "selections" / "json-subset" / "parent_raw" / "default"
-    display = pd.read_csv(output_dir / "display_table.csv")
-    assert display["particle_key"].tolist() == ["p2"]
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
     assert report["selection_source_path"].endswith("selection.json")
     assert report["selected_count"] == 1
     assert report["total_count"] == 3
+    assert report["n_points_input"] == 1
 
 
 def test_visualize_selection_id_filters_canonical_landscape(tmp_path) -> None:
@@ -1831,11 +1754,10 @@ def test_visualize_selection_id_filters_canonical_landscape(tmp_path) -> None:
         / "default"
         / "default"
     )
-    display = pd.read_csv(output_dir / "display_table.csv")
-    assert display["particle_key"].tolist() == ["p1", "p3"]
     report = json.loads((output_dir / "visualization_report.json").read_text(encoding="utf-8"))
     assert report["selection_id"] == "canonical-subset"
     assert report["coordinate_source_resolved"] == ["canonical"]
+    assert report["n_points_input"] == 2
 
 
 def test_visualize_selection_id_requires_run_dir() -> None:
@@ -1895,7 +1817,7 @@ def test_visualize_overwrite_behavior(tmp_path) -> None:
     )
 
     assert visualize_command(args) == 0
-    with pytest.raises(FileExistsError, match="Output path already exists"):
+    with pytest.raises(FileExistsError, match="Visualization output directory already exists"):
         visualize_command(args)
     assert visualize_command(overwrite_args) == 0
     output_dir = run_dir / "visualizations" / "raw" / "same"
@@ -2167,7 +2089,7 @@ def test_canonicalize_profile_memory_writes_rss_profile(tmp_path, monkeypatch) -
         return rss_state["value"], "test_rss"
 
     monkeypatch.setattr(
-        "cryorole.cli.main._current_rss_bytes",
+        "cryorole.canonicalize.service.current_rss_bytes",
         next_rss,
     )
     parser = build_parser()
@@ -2511,7 +2433,7 @@ def test_canonicalize_run_dir_array_backend_does_not_call_dataframe_reader(
     )
     run_command(run_args, runner=FakeRunner())
     monkeypatch.setattr(
-        "cryorole.cli.main.read_landscape",
+        "cryorole.canonicalize.service.read_landscape",
         lambda *_args, **_kwargs: pytest.fail("NPZ canonicalize must not read DataFrame Landscape"),
     )
     canonicalize_args = parser.parse_args(
@@ -2543,7 +2465,7 @@ def test_canonicalize_explicit_npz_uses_array_native_backend(tmp_path, monkeypat
     )
     run_command(run_args, runner=FakeRunner())
     monkeypatch.setattr(
-        "cryorole.cli.main.read_landscape",
+        "cryorole.canonicalize.service.read_landscape",
         lambda *_args, **_kwargs: pytest.fail("Explicit NPZ canonicalize must not read DataFrame Landscape"),
     )
     canonicalize_args = parser.parse_args(
@@ -2575,7 +2497,7 @@ def test_canonicalize_writes_npz_before_chunked_csv_export(tmp_path, monkeypatch
         return real_write_canonical_landscape_csv_from_npz(npz_path, csv_path, **kwargs)
 
     monkeypatch.setattr(
-        "cryorole.cli.main.write_canonical_landscape_csv_from_npz",
+        "cryorole.canonicalize.service.write_canonical_landscape_csv_from_npz",
         checked_writer,
     )
 
@@ -2629,7 +2551,7 @@ def test_canonicalize_use_frame_applies_existing_frame_and_skips_fitting(tmp_pat
     frame_path = run_dir / "canonical" / "base" / "canonical_frame.json"
 
     monkeypatch.setattr(
-        "cryorole.cli.main.canonicalize_landscape_arrays",
+        "cryorole.canonicalize.service.canonicalize_landscape_arrays",
         lambda *_args, **_kwargs: pytest.fail("--use-frame must skip PCA fitting"),
     )
     aligned_args = parser.parse_args(
@@ -2682,7 +2604,7 @@ def test_canonicalize_use_frame_uses_frame_fit_fraction_for_preview(tmp_path, mo
     frame_path = run_dir / "canonical" / "base" / "canonical_frame.json"
 
     monkeypatch.setattr(
-        "cryorole.cli.main.canonicalize_landscape_arrays",
+        "cryorole.canonicalize.service.canonicalize_landscape_arrays",
         lambda *_args, **_kwargs: pytest.fail("--use-frame must skip PCA fitting"),
     )
     aligned_args = parser.parse_args(
@@ -2728,7 +2650,7 @@ def test_canonicalize_use_frame_missing_fit_fraction_warns_and_uses_default_prev
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "cryorole.cli.main.canonicalize_landscape_arrays",
+        "cryorole.canonicalize.service.canonicalize_landscape_arrays",
         lambda *_args, **_kwargs: pytest.fail("--use-frame must skip PCA fitting"),
     )
     args = parser.parse_args(
@@ -3615,6 +3537,7 @@ def test_metadata_selection_export_still_uses_selected_row_provenance(tmp_path) 
             "ref",
             "--format",
             "keys",
+            "--allow-unverified-source",
         ]
     )
     export_metadata_command(export_args)
@@ -4248,11 +4171,11 @@ def test_export_selection_does_not_load_landscape_or_recompute_selection(tmp_pat
         policy=SelectionExportPolicy(output_dir=source_dir),
     )
     monkeypatch.setattr(
-        "cryorole.cli.main.read_landscape_json",
+        "cryorole.io.writers.landscape_store.read_landscape",
         lambda *_args, **_kwargs: pytest.fail("export selection must not load a landscape"),
     )
     monkeypatch.setattr(
-        "cryorole.cli.main.select_particles",
+        "cryorole.select.selectors.select_particles",
         lambda *_args, **_kwargs: pytest.fail("export selection must not recompute selection"),
     )
     parser = build_parser()

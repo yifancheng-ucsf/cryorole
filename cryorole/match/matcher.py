@@ -40,6 +40,10 @@ def match_resolved_identities(
     unmatched_b = len(b) - matched_count
     denominator = min(len(a), len(b)) if min(len(a), len(b)) else 1
     ratio = matched_count / denominator
+    if matched_count == 0:
+        raise IdentityResolutionError(
+            "Particle identity matching found zero matches; RO/SLD computation was not started"
+        )
     status = overlap_status(
         ratio,
         threshold=policy.overlap_threshold,
@@ -52,6 +56,10 @@ def match_resolved_identities(
     identity_columns = domain_a.report.identity_columns or domain_b.report.identity_columns
     match_key = "+".join(identity_columns) if identity_columns else None
     warnings: list[str] = []
+    if status == "warning_low_overlap":
+        warnings.append(
+            "low_particle_overlap_explicitly_allowed: matched coverage is below the public 50% threshold"
+        )
     if matched_rows_reordered:
         warnings.append(
             "inputs_matched_by_key_and_reordered_before_ro_computation"
@@ -74,6 +82,10 @@ def match_resolved_identities(
         dropped_ref_only_count=unmatched_a,
         dropped_mov_only_count=unmatched_b,
         matched_rows_reordered=matched_rows_reordered,
+        ref_coverage=float(matched_count / len(a)) if len(a) else 0.0,
+        mov_coverage=float(matched_count / len(b)) if len(b) else 0.0,
+        overlap_smaller_input=float(ratio),
+        low_overlap_allowed=bool(policy.low_overlap_allowed),
         warnings=tuple(warnings),
     )
     if status == "failed_low_overlap":

@@ -12,6 +12,7 @@ from cryorole.models.policies import (
     MatchPolicy,
 )
 from cryorole.models.pose_table import PoseTable
+from cryorole.models.pose_arrays import MatchedPoseArrays, PoseArrays, ROArrays
 from cryorole.models.ro_result import ROResult
 
 __all__ = [
@@ -26,5 +27,8 @@ __all__ = [
     "MatchReport",
     "MatchTable",
     "PoseTable",
+    "PoseArrays",
+    "MatchedPoseArrays",
+    "ROArrays",
     "ROResult",
 ]

@@ -33,11 +33,22 @@ aligned inputs before running. Use `cryorole align --key ...` when the default
 STAR identity keys are not sufficient and you need to provide an explicit
 matching key.
 
+Default key matching requires at least 50% overlap. Lower overlap requires the
+explicit audited `--allow-low-overlap` override; zero overlap and duplicate
+particle identities are hard failures before RELION Euler normalization.
+
 ## Standard Run
 
 ```bash
+cryorole preflight --ref ref_domain.star --mov mov_domain.star
 cryorole run --ref ref_domain.star --mov mov_domain.star
 ```
+
+Preflight validates STAR pose columns, resolves the RELION convention, checks
+identity uniqueness and overlap, estimates resources, and prints the exact run
+command. It has no run-bundle side effects. `cryorole run ... --dry-run` uses
+the same service. Review `READY_WITH_WARNINGS`; fix `BLOCKED` inputs before RO
+computation.
 
 The default run bundle is written under:
 
@@ -53,12 +64,17 @@ Important outputs include:
 ```text
 cryorole_outputs/run_manifest.json
 cryorole_outputs/run_summary.json
+cryorole_outputs/run_report.md
 cryorole_outputs/data/raw_landscape.npz
 cryorole_outputs/data/raw_landscape.csv
 cryorole_outputs/data/match_table.csv
 cryorole_outputs/reports/
-cryorole_outputs/visualizations/
+cryorole_outputs/visualizations/quicklook/  # seven flat PNGs
 ```
+
+The run quick-look contains Euler/RV triptychs for all particles, `sld_raw >=
+1`, and the top 40%, plus the full-data log-SLD distribution. Use `cryorole
+visualize` for expanded display products.
 
 ## Row-Aligned Inputs
 
@@ -119,8 +135,20 @@ cryorole visualize --run-dir cryorole_outputs --space canonical
 
 Visualization outputs are display-only. Display filters, ranges, and color
 scales do not alter raw/canonical landscapes and do not create selections.
+The default is two PNG triptychs for `sld_display >= 1`; 1D and 3D views are
+explicit through `--view`.
 
 ## Select
+
+To choose a center interactively from linked Euler and rotation-vector views:
+
+```bash
+cryorole explore --run-dir cryorole_outputs --space canonical
+```
+
+Display filters and display sampling affect only the browser view. Evaluate and
+Confirm use the full parent landscape and the Python SO(3) evaluator. Confirm
+writes a normal selection; closing the browser before Confirm writes none.
 
 ```bash
 cryorole select \
@@ -148,3 +176,12 @@ cryorole export \
 Export uses the recorded `ref_source_row_id` and `mov_source_row_id`
 provenance. It subsets the original source metadata and does not rewrite source
 poses with canonical or display coordinates.
+
+The source STAR identity is also content-addressed. If a STAR file has moved,
+use `--relocated-ref` or `--relocated-mov`; export continues only when the
+streamed SHA-256 matches the run record. Changed or replaced STAR files are
+rejected.
+
+At any time, `cryorole status --run-dir cryorole_outputs` reports actual bundle
+and artifact integrity, while `cryorole next --run-dir cryorole_outputs` prints
+exact required/recommended/optional next commands.

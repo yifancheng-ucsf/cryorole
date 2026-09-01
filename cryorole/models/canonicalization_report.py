@@ -25,7 +25,7 @@ class CanonicalizationReport:
     assigned_coordinate_names: tuple[str, ...] = ("alpha", "beta", "gamma")
     assigned_rotvec_columns: tuple[str, ...] = ("z", "y", "x")
     sign_rule: str = "density_weighted_skewness"
-    positive_side: str = "high_density_skew"
+    positive_side: str = "low_density_skew"
     sign_weight_field: str = "sld_raw"
     axis_weighted_skewness: tuple[float, ...] = ()
     flipped_axes: tuple[str, ...] = ()

@@ -428,6 +428,31 @@ def test_tail_jump_display_outlier_detection_ignores_nonqualifying_cases() -> No
     assert not too_many_after_jump["sld_display_is_outlier"].any()
 
 
+def test_density_report_distinguishes_high_sld_from_discontinuous_tail() -> None:
+    rotvecs = [np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0])]
+    rotvecs.extend(np.array([index / 1000.0, 0.0, 0.0]) for index in range(2, 1000))
+
+    landscape = compute_landscape_density(
+        _ro_result_from_rotvecs(rotvecs),
+        policy=DensityPolicy(k_neighbors=1),
+    )
+
+    report = landscape.density_report
+    assert report is not None
+    assert report.high_sld_threshold == 100.0
+    assert report.n_high_sld_points == 2
+    assert report.fraction_high_sld_points == pytest.approx(0.002)
+    assert "HIGH_SLD_PRESENT" in report.warning_codes
+    assert "DISCONTINUOUS_SLD_TAIL" in report.warning_codes
+    assert "DISTANCE_FLOOR_APPLIED" in report.warning_codes
+    assert report.sld_display_outlier_threshold is not None
+    np.testing.assert_allclose(
+        landscape.data["sld_display"],
+        landscape.data["sld_raw"],
+    )
+    assert len(landscape.data) == 1000
+
+
 def test_density_report_records_near_identity_ro_diagnostics() -> None:
     ro_result = _ro_result_from_rotvecs(
         [
@@ -559,3 +584,32 @@ def test_landscape_rejects_missing_particle_key() -> None:
 def test_landscape_checks_density_report_n_points_consistency() -> None:
     with pytest.raises(ValueError, match="density_report.n_points"):
         Landscape(data=_valid_landscape_data(), density_report=_density_report(n_points=2))
+
+
+def test_rotvec_euclidean_query_batch_size_bounds_each_tree_query(monkeypatch):
+    from cryorole.core import density as density_module
+
+    query_sizes: list[int] = []
+
+    class RecordingTree:
+        def __init__(self, points):
+            self.points = np.asarray(points, dtype=float)
+
+        def query(self, queries, k):
+            values = np.asarray(queries, dtype=float)
+            query_sizes.append(len(values))
+            distances = np.linalg.norm(values[:, None, :] - self.points[None, :, :], axis=2)
+            order = np.argsort(distances, axis=1)[:, :k]
+            return np.take_along_axis(distances, order, axis=1), order
+
+    monkeypatch.setattr(density_module, "cKDTree", RecordingTree)
+    coords = np.arange(30, dtype=float).reshape(10, 3) / 100.0
+
+    compute_sld_values(
+        coords,
+        k_neighbors=2,
+        distance_floor_fraction=1e-4,
+        query_batch_size=3,
+    )
+
+    assert query_sizes == [3, 3, 3, 1]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone

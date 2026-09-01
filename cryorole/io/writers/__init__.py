@@ -8,7 +8,9 @@ from cryorole.io.writers.landscape_store import (
     resolve_landscape_path,
     write_canonical_landscape_csv,
     write_landscape_npz,
+    write_landscape_npz_arrays,
     write_raw_landscape_csv,
+    write_raw_landscape_csv_from_arrays,
 )
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "resolve_landscape_path",
     "write_canonical_landscape_csv",
     "write_landscape_npz",
+    "write_landscape_npz_arrays",
     "write_raw_landscape_csv",
+    "write_raw_landscape_csv_from_arrays",
 ]

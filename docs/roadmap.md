@@ -1,7 +1,8 @@
 # cryoROLE 2.0 Roadmap
 
 **Status:** Living roadmap
-**Current code state:** Architecture-complete beta with active production-scale run work.
+**Current code state:** Architecture-complete beta with Core Productionization,
+Workflow UX, and the typed CLI/service boundary refactor implemented.
 
 ---
 
@@ -10,7 +11,7 @@
 cryoROLE 2.0 now has a complete command-layer workflow:
 
 ```text
-run -> canonicalize -> visualize -> select -> export
+preflight -> run -> status/next -> [canonicalize] -> explore/visualize -> select -> export
 ```
 
 Implemented or substantially established:
@@ -25,6 +26,13 @@ visualization-compatible rotated-landscape diagnostic script
 legacy-compatible visualization style
 SO(3)-aware selection
 source-row-based STAR/CS metadata subset export
+transactional run bundles with rollback-safe whole-bundle overwrite
+streamed source identity and export-time SHA-256 verification
+50% public matching safety gate with explicit audited override
+array-native match-first run backend, batched SLD, and chunked raw CSV
+shared side-effect-free preflight and run --dry-run
+artifact-derived status/next and conservative guide
+localhost-only offline interactive explorer and explicit Confirm boundary
 policy/report/manifest-oriented architecture
 offline animation trajectory/transform core (Phase 1)
 offline three-panel landscape animation (Phase 2)
@@ -32,7 +40,13 @@ ChimeraX script-only and optional execute export (Phase 3)
 animation display-policy parity and Linux offscreen completion checks
 deterministic composite frames and validated H.264 MP4 export (Phase 4)
 resolution-scaled projection marker/text and tighter panel spacing
-optional validated two-session structure view
+optional validated two- and three-session structure views
+repeatable rigid reference/moving model groups with per-model validation
+shared resolved input policy across preflight/run/guide
+content-level SourceIdentityGuard at formal run consumption
+typed run/canonicalize/visualize/select services
+standard Selection artifact writer shared by CLI and interactive Confirm
+array-first NPZ visualization filtering and mode-minimal NPZ selection
 ```
 
 Animation follow-up work:
@@ -47,7 +61,9 @@ optional overlay is coordinate-only.
 
 The camera-only `cryorole canonical-views` helper is implemented for exporting
 deterministic canonical +X/+Y/+Z views from a raw or explicitly mapped
-ChimeraX session without moving either density model.
+ChimeraX session without moving either density model. Optional
+`--save-sessions` writes the same three views as derived camera-only `.cxs`
+sessions while preserving the source session and model transforms.
 
 The second presentation refinement is implemented: projection gaps are tighter,
 the marker and coordinate line scale for the final composite, and an optional
@@ -58,6 +74,18 @@ The third presentation refinement is implemented: dual-view stacked output may
 crop a fixed horizontal fraction from both structure sources and anchor the
 views inward. The animation colorbar now displays `SLD` without renaming the
 underlying `sld_display` artifact field.
+
+The fourth presentation refinement is implemented: an optional tertiary
+ChimeraX session extends the existing single/dual workflow to three equal
+stacked structure views with independent completion checks and shared baseline
+transform validation. Fixed horizontal/vertical multi-view crop controls and a
+three-view 58/42 structure/landscape split reduce unused canvas space while
+preserving the existing single/dual layout.
+
+Rigid model groups are implemented for three-body and similar sessions:
+`--reference-model-id` and `--moving-model-id` are repeatable, all moving
+models share one absolute delta from their own baselines, and completion plus
+multi-view parity checks cover every declared model.
 
 The implemented Phase 1–4 contract is documented
 in `docs/animation_export.md`. Animation remains downstream and does not replace
@@ -73,7 +101,9 @@ The bounded Phase 3 stabilization is complete:
 4. requires an explicit renderer-completion artifact in addition to process and
    PNG validation.
 
-The next priority is not new science. The next priority is production hardening.
+The next priority is not new science. It is release validation, larger 500k/1M
+capacity checks, and continued gradual removal of DataFrame compatibility paths
+where equivalence coverage already exists.
 
 ---
 
@@ -92,7 +122,7 @@ This is a planning frame, not a strict versioning requirement.
 
 ---
 
-## 3. Active sprint: production-scale run
+## 3. Completed milestone: Core Productionization
 
 Goal:
 
@@ -111,9 +141,13 @@ Core tasks:
 7. Add opt-in `--sld-metric so3_geodesic`; keep `rotvec_euclidean` as the default and record the resolved metric.
 8. Write raw NPZ directly from arrays.
 9. Write raw CSV as chunked post-export.
-10. Keep default raw visualization on, using legacy rainbow all-particle and `sld_raw > 1.5` preview views with display `vmax = min(max displayed SLD, 100)`; `--no-visualize` must leave downstream commands usable.
+10. Keep default raw visualization on as seven flat quick-look PNGs: Euler/RV triptychs for all particles, `sld_raw >= 1`, and the top 40%, plus a full-data log-SLD histogram. Use legacy rainbow display and `vmax = min(full-landscape max SLD, 100)`; `--no-visualize` must leave downstream commands usable and still write `run_report.md`.
 11. Keep `cryorole run --help` compact by hiding visualization and developer/debug controls from normal help.
 12. Add memory/timing reporting and synthetic benchmark scripts for both SLD metrics.
+13. Assign stable `run_id`, record streamed source hashes, verify sources before
+    export, support verified relocation, and gate legacy unverified export.
+14. Publish run bundles transactionally and replace overwrite targets only after
+    the new bundle is complete.
 
 Detailed plan: `docs/production_run_plan.md`.
 
@@ -127,11 +161,78 @@ default run CLI is compact and documented
 CS uid and STAR image-name matching are tested
 RELION tomo `_rlnTomoParticleName` matching is tested
 reordered/dropped matches warn and are reported
-default run visualization writes all-particle and SLD-threshold 2D/3D preview outputs
+default run visualization writes exactly seven flat PNGs and no extra quick-look artifacts
 run help shows only public run controls
 100k synthetic benchmarks compare both SLD metrics with memory profiles
 canonicalize/select/export work from array-native run bundle
+fault injection leaves no partial formal run and preserves old overwrite targets
+source relocation, replacement, hash mismatch, legacy override, and run-id mismatch are tested
 ```
+
+Implementation status:
+
+Local sign-off on 2026-08-20 passed the complete suite (`546 passed, 2
+skipped`). A synthetic 100k full-run comparison measured 184.84 MiB peak RSS
+for `array_native` and 932.67 MiB for `dataframe_compat`; detailed parameters
+and limitations are recorded in `docs/production_run_plan.md`.
+
+```text
+complete: source identity schema and export verification
+complete: zero/low-overlap matching safety and reporting
+complete: PoseArrays/MatchedPoseArrays/ROArrays/LandscapeArrays production path
+complete: vectorized RO and batched RV/SO(3) SLD
+complete: direct NPZ and chunked raw CSV
+complete: RunBundleWriter staging, validation, commit, failure report, rollback
+complete: auto -> array_native; explicit dataframe_compat reference backend
+complete: canonical display-outlier preservation and canonical positive-side default parity
+complete: full fast suite and recorded 100k production benchmark
+```
+
+---
+
+## 3.1 Completed milestone: Workflow UX
+
+Goal:
+
+```text
+Make the production workflow safe and approachable without hiding scientific decisions.
+```
+
+Implemented:
+
+1. `cryorole preflight` and `cryorole run --dry-run` share production run's
+   minimal-field, array-native pose/matching validation and create no bundle.
+2. Schema-1.0 readiness reports use `READY`, `READY_WITH_WARNINGS`, or
+   `BLOCKED`, with source identities, conventions, matching diagnostics,
+   resource formulas/assumptions, and exact commands.
+3. Production run consumes the same result and rejects an input whose content
+   changed after inspection.
+4. `status` derives integrity and progress from actual artifacts; `next`
+   distinguishes required, recommended, and optional actions.
+5. `guide` wraps preflight/status/next conservatively and requires an explicit
+   run execution choice. It never makes a scientific selection or export.
+6. `explore` serves packaged offline assets on `127.0.0.1`, renders linked
+   EA/RV projections, and clearly separates draft evaluation from Confirm.
+7. Display filtering/downsampling affects only presentation. Exact counts and
+   Confirm use the full parent landscape and shared Python SO(3) evaluator.
+8. Confirm writes the standard Selection with run/landscape hash, coordinate,
+   radius, convention, count, timestamp, and UI provenance, and refuses
+   overwrite or stale sessions.
+
+Recorded 100k workflow benchmark (2026-08-21, synthetic local dataset,
+`max_display_points=50,000`):
+
+```text
+preflight: 0.222 s wall, 134.37 MiB peak RSS, 100,000 matched
+explore load: 0.052 s
+exact full-landscape radius evaluation: 0.060 s
+explore subprocess: 111.88 MiB peak RSS
+raw CSV required: no
+```
+
+These are local planning measurements, not hardware-independent guarantees.
+The milestone adds no optional Python dependency: the explorer server is
+standard-library based and browser assets are packaged with the project.
 
 ---
 
@@ -166,7 +267,7 @@ changing RO, SLD, selection, or export semantics
 
 ---
 
-## 5. Following sprint: public visualize cleanup
+## 5. Implemented: public visualize cleanup
 
 Goal:
 
@@ -178,19 +279,18 @@ Tasks:
 
 1. Keep the public command centered on `cryorole visualize --run-dir RUN`.
 2. Remove public `--output-dir`; write under `RUN/visualizations/` using `--visual-id` or `default`.
-3. Default to legacy rainbow style, PNG output, fixed `sld_display` coloring, and equal display units within each figure.
-4. Keep compact display controls: `--space`, `--canonical-id`, `--selection-id`, `--use-selected-landscape`, `--visual-id`, `--representation`, `--colormap`, `--range`, `--top-fraction`, `--threshold`, `--formats`, `--vmin`, `--vmax`, `--bins`, `--hist-mode`, `--kde-bandwidth`, `--xlim`, `--ylim`, and `--overwrite`.
+3. Default to exactly two PNG three-view projections, `sld_display >= 1`, legacy rainbow style, fixed `sld_display` coloring, and equal display units within each figure.
+4. Use one composable `--view 2d[,1d,3d]` control. Keep row filters (`--range`, `--top-fraction`, `--sld-threshold`, `--all`) separate from viewport policy (`--axis-limit`).
 5. Remove public Euler convention/radian/sequence controls; use the source landscape's recorded Euler convention.
-6. Write basic 1D distributions by default from the same displayed rows as 2D/3D views: histogram plus KDE curve only.
+6. Make 1D opt-in, flat, full-filtered-data output with auto-binned percentage histograms; make coordinate KDE an explicit option.
 7. Write selection visualizations under `visualizations/selections/<selection_id>/`, including parent-landscape and selected-landscape modes.
-8. Record all display filters, range viewport policy, colormap policy, 1D distribution policy, selection provenance, and generated files in `visualization_report.json`.
-9. Add focused tests for compact help, output paths, selection paths, range behavior, colormap policy, formats, 1D outputs, and display-only safety.
+8. Provide opt-in self-contained offline interactive 3D and explicit static 3D. Interactive inspection cannot create or confirm a Selection.
+9. Record all display filters, sampling policies, viewport policy, colormap policy, per-view counts, 1D statistics, 3D mode, selection provenance, and generated files in `visualization_report.json`.
+10. Cover compact help, exact default outputs, view combinations, output paths, selection paths, range/viewport separation, formats, 1D full-data behavior, offline 3D, and display-only safety with focused tests.
 
 Non-goals:
 
 ```text
-new plotting backends
-interactive viewer
 new scientific selection behavior
 changing run/canonicalize/select/export semantics
 Euler convention overrides in public visualize
@@ -336,9 +436,9 @@ Tasks:
    markers, optional trails, labels, and axis-limit expansion per frame.
 6. Generate ChimeraX scripts from a preconfigured session without requiring
    ChimeraX in normal CI.
-7. Add optional execute mode with exact model-ID validation, fixed reference
-   transform, absolute moving-model transforms, captured logs, and frame-count
-   validation.
+7. Add optional execute mode with exact model-group validation, fixed
+   stationary transforms, absolute moving-model transforms, captured logs, and
+   frame-count validation.
 8. Preserve deterministic composition and validated
    H.264/yuv420p/faststart MP4 encoding.
 9. Preserve a staged manifest that distinguishes `scripts_ready`,
@@ -414,7 +514,7 @@ Concepts that must be explained clearly:
 
 ```text
 public run defaults: --ref, --mov, --output-dir, default domains, default matching, --row-aligned
-default run previews: all_particles and filter_particles_by_sld_gt_1p5
+default run quick-look: three Euler/RV triptych pairs plus full-data log-SLD PNG
 default canonical previews: all_particles, filter_particles_by_sld_gt_1p5, and fit-top support preview
 when to run cryorole align or manually pre-align metadata
 align auto keys, explicit keys, duplicate policy, and low-overlap warnings
@@ -476,7 +576,7 @@ These are valuable but should not block cryoROLE 2.0 stabilization:
 SE(3) translation landscape extension
 translation diagnostics before full SE(3): tomo XYZ distance, SPA XY shift distance, explicit defocus-as-Z proxy policy
 MPI or distributed density computation
-interactive viewer / GUI
+full workflow GUI beyond the offline display-only 3D viewer
 interactive ChimeraX integration beyond offline script export
 canonical map/metadata transform export
 advanced clustering/state annotation

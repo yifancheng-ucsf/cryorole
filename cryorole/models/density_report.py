@@ -48,4 +48,8 @@ class DensityReport:
     near_duplicate_coordinate_tolerance_rad: float = 1e-8
     n_near_duplicate_coordinate_points: int = 0
     largest_near_duplicate_coordinate_cluster: int = 0
+    high_sld_threshold: float = 100.0
+    n_high_sld_points: int = 0
+    fraction_high_sld_points: float = 0.0
+    warning_codes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()

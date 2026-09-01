@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,6 +15,8 @@ from cryorole.io.writers.landscape_store import write_landscape_npz
 from cryorole.models.landscape import Landscape
 from cryorole.models.policies import SelectionExportPolicy, SelectionMetadataExportPolicy
 from cryorole.models.selection import Selection
+from cryorole.provenance import build_source_identity
+from cryorole.export import read_selection_json
 
 
 def _make_landscape() -> Landscape:
@@ -118,13 +122,28 @@ def _make_run_bundle(tmp_path, *, ref_suffix=".star", mov_suffix=".star"):
     else:
         _write_cs(mov_path)
     write_landscape_npz(_make_landscape(), data_dir / "raw_landscape.npz")
+    ref_type = "relion" if ref_suffix == ".star" else "cryosparc"
+    mov_type = "relion" if mov_suffix == ".star" else "cryosparc"
     (run_dir / "run_summary.json").write_text(
         json.dumps(
             {
                 "input_paths": {"ref": str(ref_path), "mov": str(mov_path)},
+                "run_id": "test-run-id",
+                "source_identities": {
+                    "ref": build_source_identity(
+                        ref_path,
+                        source_type=ref_type,
+                        row_count=5,
+                    ).to_dict(),
+                    "mov": build_source_identity(
+                        mov_path,
+                        source_type=mov_type,
+                        row_count=5,
+                    ).to_dict(),
+                },
                 "source_types": {
-                    "ref": "relion" if ref_suffix == ".star" else "cryosparc",
-                    "mov": "relion" if mov_suffix == ".star" else "cryosparc",
+                    "ref": ref_type,
+                    "mov": mov_type,
                 },
             }
         ),
@@ -135,6 +154,100 @@ def _make_run_bundle(tmp_path, *, ref_suffix=".star", mov_suffix=".star"):
         policy=SelectionExportPolicy(output_dir=selection_dir),
     )
     return run_dir, ref_path, mov_path, report.output_paths["selection_json"]
+
+
+def test_export_accepts_explicit_relocated_source_only_after_hash_verification(tmp_path) -> None:
+    run_dir, ref_path, _mov_path, selection_path = _make_run_bundle(tmp_path)
+    relocated = tmp_path / "relocated" / "ref.star"
+    relocated.parent.mkdir()
+    shutil.move(str(ref_path), str(relocated))
+    selection = read_selection_json(selection_path)
+
+    report = export_selection_metadata_subset(
+        selection,
+        policy=SelectionMetadataExportPolicy(
+            run_dir=run_dir,
+            output_dir=tmp_path / "export",
+            domain="ref",
+            relocated_ref=relocated,
+        ),
+        selection_path=selection_path,
+    )
+
+    assert report["source_verification"]["ref"]["sha256_verified"] is True
+    assert report["source_verification"]["ref"]["relocated"] is True
+    assert report["source_files"]["ref"] == str(relocated.resolve())
+
+
+def test_export_rejects_changed_or_same_path_replaced_source(tmp_path) -> None:
+    run_dir, ref_path, _mov_path, selection_path = _make_run_bundle(tmp_path)
+    ref_path.write_text(ref_path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    selection = read_selection_json(selection_path)
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        export_selection_metadata_subset(
+            selection,
+            policy=SelectionMetadataExportPolicy(
+                run_dir=run_dir,
+                output_dir=tmp_path / "export",
+                domain="ref",
+            ),
+            selection_path=selection_path,
+        )
+    assert not (tmp_path / "export").exists()
+
+
+def test_legacy_unverified_export_requires_explicit_override_and_records_it(tmp_path) -> None:
+    run_dir, _ref_path, _mov_path, selection_path = _make_run_bundle(tmp_path)
+    summary_path = run_dir / "run_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("source_identities")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    selection = read_selection_json(selection_path)
+
+    with pytest.raises(ValueError, match="Legacy run bundle"):
+        export_selection_metadata_subset(
+            selection,
+            policy=SelectionMetadataExportPolicy(
+                run_dir=run_dir,
+                output_dir=tmp_path / "refused",
+                domain="ref",
+            ),
+            selection_path=selection_path,
+        )
+
+    report = export_selection_metadata_subset(
+        selection,
+        policy=SelectionMetadataExportPolicy(
+            run_dir=run_dir,
+            output_dir=tmp_path / "allowed",
+            domain="ref",
+            allow_unverified_source=True,
+        ),
+        selection_path=selection_path,
+    )
+    assert report["allow_unverified_source"] is True
+    assert report["source_verification"]["ref"]["verification_status"] == (
+        "legacy_unverified_allowed"
+    )
+
+
+def test_export_rejects_selection_from_different_run_id(tmp_path) -> None:
+    run_dir, _ref_path, _mov_path, selection_path = _make_run_bundle(tmp_path)
+    payload = json.loads(Path(selection_path).read_text(encoding="utf-8"))
+    payload["parent_run_id"] = "different-run"
+    Path(selection_path).write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not match run_id"):
+        export_selection_metadata_subset(
+            read_selection_json(selection_path),
+            policy=SelectionMetadataExportPolicy(
+                run_dir=run_dir,
+                output_dir=tmp_path / "export",
+                domain="ref",
+            ),
+            selection_path=selection_path,
+        )
 
 
 def test_direct_cli_parser_accepts_metadata_export_options(tmp_path) -> None:
@@ -274,7 +387,7 @@ def test_export_output_dir_overrides_default_as_advanced_path(tmp_path) -> None:
 def test_export_metadata_command_does_not_reselect(tmp_path, monkeypatch) -> None:
     run_dir, _ref_path, _mov_path, _selection_path = _make_run_bundle(tmp_path)
     monkeypatch.setattr(
-        "cryorole.cli.main.select_particles",
+        "cryorole.select.selectors.select_particles",
         lambda *_args, **_kwargs: pytest.fail("export must not recompute selection"),
     )
     parser = build_parser()
