@@ -1149,7 +1149,7 @@ def test_visualize_help_shows_compact_public_surface(capsys) -> None:
         "--vmin",
         "--vmax",
         "--point-size",
-        "--alpha",
+        "--opacity",
         "--axis-limit",
         "--max-points",
         "--bins",
@@ -3258,7 +3258,7 @@ def test_select_threshold_accepts_sld_max_only_and_rejects_bad_window(tmp_path) 
             "1.0",
         ]
     )
-    with pytest.raises(ValueError, match="sld_min"):
+    with pytest.raises(ValueError, match="--sld-min"):
         select_command(bad_args)
 
 
@@ -3317,7 +3317,7 @@ def test_select_random_mode_rejects_invalid_fraction(tmp_path) -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="random_fraction"):
+    with pytest.raises(ValueError, match="--fraction"):
         select_command(args)
 
 
@@ -3862,8 +3862,8 @@ def test_select_help_documents_compact_public_surface(capsys) -> None:
         assert option in help_text
     assert "selected_landscape" in help_text
     assert "use-selected-landscape" in help_text
-    assert "Recompute SLD only" in help_text
-    assert "raw/canonical landscapes are unchanged" in help_text
+    assert "Recompute subset SLD" in " ".join(help_text.split())
+    assert "parent landscapes and unrelated selections remain unchanged" in " ".join(help_text.split())
     for removed in (
         "--output",
         "--landscape",
@@ -4202,3 +4202,31 @@ def test_manifest_command_writes_manifest(tmp_path) -> None:
 
     assert manifest_command(args) == 0
     assert output_path.exists()
+
+
+@pytest.mark.parametrize("options,split", [
+    (["--mode", "radius", "--center", "0", "0", "0", "--radius", "15"], False),
+    (["--mode", "threshold", "--sld-min", "2"], False),
+    (["--mode", "range", "--range-bound", "alpha:-20:20"], False),
+    (["--mode", "random", "--fraction", "0.1", "--seed", "7"], False),
+    (["--mode", "metadata", "--metadata-domain", "ref", "--metadata-column", "rlnClassNumber", "--metadata-value", "1,3"], False),
+    (["--mode", "metadata", "--metadata-domain", "ref", "--metadata-column", "rlnClassNumber", "--split-by-value"], True),
+])
+def test_select_complete_help_examples_write_standard_artifacts(tmp_path, capsys, options, split):
+    run_dir, _ref, _mov = _make_metadata_selection_run_bundle(tmp_path)
+    args = build_parser().parse_args([
+        "select", "--run-dir", str(run_dir), "--selection-id", "example", *options,
+    ])
+    assert select_command(args) == 0
+    paths = sorted((run_dir / "selections").glob("example*"))
+    assert len(paths) == (2 if split else 1)
+    for path in paths:
+        assert (path / "selection.json").exists()
+        assert (path / "selected_particle_keys.csv").exists()
+        summary = json.loads((path / "selection_summary.json").read_text())
+        assert summary["selection_id"] == path.name
+    captured = capsys.readouterr()
+    assert "Next: cryorole export" in captured.err
+    assert captured.out.strip() == str(run_dir / "selections" if split else paths[0])
+    with pytest.raises(FileExistsError, match="Choose another --selection-id"):
+        select_command(args)

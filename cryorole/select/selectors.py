@@ -14,6 +14,7 @@ from cryorole.models.landscape import Landscape
 from cryorole.models.policies import SelectionPolicy
 from cryorole.models.selection import Selection
 from cryorole.select.evaluator import center_to_rotvec, evaluate_radius_mask
+from cryorole.select.metadata import CsMetadataColumn
 
 
 def select_particles(
@@ -517,33 +518,41 @@ def _select_by_source_metadata(
     )
     if source_row_id_field not in landscape.data.columns:
         raise ValueError(f"Landscape missing metadata source-row field: {source_row_id_field}")
-    values_by_row_id = _metadata_values_by_source_row_id(
-        source_metadata,
-        metadata_column=str(policy.metadata_column),
-    )
-    requested_values = tuple(_metadata_value_key(value) for value in policy.metadata_values)
-    requested_set = set(requested_values)
-    selected_keys: list[object] = []
-    missing_count = 0
-    invalid_count = 0
-    for particle_key, source_row_id in zip(
-        landscape.data["particle_key"],
-        landscape.data[source_row_id_field],
-    ):
-        row_id = _coerce_source_row_id(source_row_id)
-        if row_id is None or row_id < 0:
-            invalid_count += 1
-            missing_count += 1
-            continue
-        if row_id not in values_by_row_id:
-            missing_count += 1
-            continue
-        metadata_value = values_by_row_id[row_id]
-        if metadata_value is None:
-            missing_count += 1
-            continue
-        if metadata_value in requested_set:
-            selected_keys.append(particle_key)
+    if isinstance(source_metadata, CsMetadataColumn):
+        if len(source_metadata.values) != len(landscape.data):
+            raise ValueError("CS metadata column is not aligned to the full parent landscape")
+        mask, requested_values = source_metadata.select(policy.metadata_values)
+        selected_keys = landscape.data.loc[mask, "particle_key"].tolist()
+        missing_count = int(np.count_nonzero(source_metadata.missing))
+        invalid_count = 0
+    else:
+        values_by_row_id = _metadata_values_by_source_row_id(
+            source_metadata,
+            metadata_column=str(policy.metadata_column),
+        )
+        requested_values = tuple(_metadata_value_key(value) for value in policy.metadata_values)
+        requested_set = set(requested_values)
+        selected_keys: list[object] = []
+        missing_count = 0
+        invalid_count = 0
+        for particle_key, source_row_id in zip(
+            landscape.data["particle_key"],
+            landscape.data[source_row_id_field],
+        ):
+            row_id = _coerce_source_row_id(source_row_id)
+            if row_id is None or row_id < 0:
+                invalid_count += 1
+                missing_count += 1
+                continue
+            if row_id not in values_by_row_id:
+                missing_count += 1
+                continue
+            metadata_value = values_by_row_id[row_id]
+            if metadata_value is None:
+                missing_count += 1
+                continue
+            if metadata_value in requested_set:
+                selected_keys.append(particle_key)
     metadata = {
         "metadata_domain": policy.metadata_domain,
         "metadata_source_file": policy.metadata_source_file,

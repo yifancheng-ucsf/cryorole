@@ -837,6 +837,7 @@ def _run_summary_payload(
         ),
         "low_overlap_allowed": phase1.match_report.low_overlap_allowed,
         "match_warnings": list(phase1.match_report.warnings),
+        "ro_coordinate_diagnostics": getattr(getattr(landscape, "density_report", None), "ro_coordinate_diagnostics", None),
         "landscape_row_count": int(landscape_row_count),
         "k_neighbors": k_neighbors,
         "requested_sld_metric": args.sld_metric,

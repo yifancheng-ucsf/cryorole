@@ -25,12 +25,18 @@ from cryorole.export import (
 )
 from cryorole.export.serialization import to_json_safe
 from cryorole.io.readers import read_relion_star
+from cryorole.io.readers.cs_reader import read_cryosparc_cs_column
+from cryorole.provenance.source_identity import verify_source_identity
+from cryorole.select.metadata import CsMetadataColumn, CS_METADATA_MAX_GROUPS
 from cryorole.models.landscape import Landscape
 from cryorole.models.landscape_arrays import LandscapeArrays
 from cryorole.models.policies import DensityPolicy, SelectionPolicy
 from cryorole.run_bundle import validate_completed_run_bundle
 from cryorole.select.artifacts import SelectedRowProvenance, SelectionArtifactRequest, write_selection_artifact
-from cryorole.select.selectors import select_particles
+from cryorole.select.selectors import (
+    select_particles, _metadata_value_key as _cli_metadata_value_key,
+    _coerce_source_row_id as _coerce_cli_source_row_id, _resolve_metadata_column_name,
+)
 from cryorole.workflows.input_policy import resolve_source_type
 
 
@@ -59,6 +65,7 @@ class SelectRequest:
     recompute_sld: bool = False
     overwrite: bool = False
     euler_convention: str | None = None
+    explicit_options: tuple[str, ...] = ()
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "SelectRequest":
@@ -70,6 +77,7 @@ class SelectRequest:
 class SelectResult:
     output_dir: Path
     selection_dirs: tuple[Path, ...]
+    selected_counts: tuple[int, ...] = ()
 
 
 @dataclass
@@ -82,14 +90,74 @@ class _ArraySelectionLandscape:
     canonicalization_report: object | None = None
 
 
+def _validate_select_request(request: SelectRequest) -> None:
+    """Validate mode intent before reading inputs or creating artifacts."""
+    if not request.selection_id or not request.selection_id.strip():
+        raise ValueError("Choose a name for this selection: add --selection-id region_01. No default name is assigned.")
+    if request.selection_id in {".", ".."} or any(
+        char in "/\\:" or ord(char) < 32 for char in request.selection_id
+    ):
+        raise ValueError("--selection-id must be a name, not a path; for example region_01")
+    modes = {
+        "radius": ("center", "center_representation", "radius", "radius_rad", "metric"),
+        "threshold": ("sld_min", "sld_max"),
+        "range": ("range_bound",),
+        "random": ("fraction", "seed"),
+        "metadata": ("metadata_domain", "metadata_column", "metadata_value", "split_by_value"),
+    }
+    mode = request.selection_mode
+    if mode not in modes:
+        raise ValueError(f"Unsupported --mode {mode!r}; choose from {', '.join(modes)}")
+    defaults = {"center_representation": "euler", "metric": "so3", "range_bound": (), "split_by_value": False}
+    for owner, names in modes.items():
+        for name in names:
+            value = getattr(request, name)
+            supplied = name in request.explicit_options or (
+                bool(value) if name == "range_bound" else value != defaults.get(name)
+            )
+            if supplied and owner != mode:
+                option = "--" + name.replace("_", "-")
+                raise ValueError(f"{option} applies only to --mode {owner}; current mode is {mode!r}. Remove it or change --mode.")
+    if request.space != "canonical" and (
+        "canonical_id" in request.explicit_options or request.canonical_id != "default"
+    ):
+        raise ValueError("--canonical-id requires --space canonical")
+    required = {
+        "radius": [(request.center is not None, "--center A B C"),
+                   (request.radius is not None or request.radius_rad is not None, "--radius DEG or --radius-rad RAD")],
+        "threshold": [(request.sld_min is not None or request.sld_max is not None, "--sld-min VALUE, --sld-max VALUE, or both")],
+        "range": [(bool(request.range_bound), "--range-bound AXIS:LOWER:UPPER")],
+        "random": [(request.fraction is not None, "--fraction F")],
+        "metadata": [(bool(request.metadata_domain), "--metadata-domain ref|mov"),
+                     (bool(request.metadata_column), "--metadata-column COLUMN"),
+                     (bool(request.metadata_value) or request.split_by_value, "--metadata-value VALUES or --split-by-value")],
+    }
+    for present, usage in required[mode]:
+        if not present:
+            raise ValueError(f"Mode {mode!r} requires {usage}. See cryorole select --help for a complete example.")
+    _resolve_radius_args(request)
+    _internal_selection_mode(request)
+    if request.fraction is not None and (not np.isfinite(request.fraction) or not 0 < request.fraction <= 1):
+        raise ValueError("--fraction must be finite and in (0, 1]")
+    for name in ("sld_min", "sld_max"):
+        value = getattr(request, name)
+        if value is not None and (not np.isfinite(value) or value < 0):
+            raise ValueError(f"--{name.replace('_', '-')} must be finite and non-negative")
+    if request.sld_min is not None and request.sld_max is not None and request.sld_min > request.sld_max:
+        raise ValueError("--sld-min must be <= --sld-max")
+    if request.seed is not None and request.seed < 0:
+        raise ValueError("--seed must be a non-negative integer")
+    if request.recompute_sld and not request.write_selected_landscape:
+        raise ValueError("--recompute-sld requires --write-selected-landscape")
+
+
 def create_selection(request: SelectRequest) -> SelectResult:
     """Load a saved landscape, select particles, and export selection artifacts."""
 
     args = request
 
+    _validate_select_request(request)
     validate_completed_run_bundle(args.run_dir)
-    if getattr(args, "recompute_sld", False) and not getattr(args, "write_selected_landscape", False):
-        raise ValueError("--recompute-sld requires --write-selected-landscape")
     landscape_source = args.run_dir
     landscape_metadata = read_landscape_metadata(
         landscape_source,
@@ -115,13 +183,15 @@ def create_selection(request: SelectRequest) -> SelectResult:
 
     source_metadata = None
     if policy.selection_mode in {"metadata_value", "metadata_group"}:
-        source_metadata, metadata_source_file = _load_run_source_metadata_for_selection(
+        source_metadata, metadata_source_file, source_details = _load_run_source_metadata_for_selection(
             args,
             policy=policy,
+            landscape=landscape,
         )
         policy = replace(
             policy,
             metadata_source_file=str(metadata_source_file),
+            metadata_source_details=source_details,
             metadata_source_row_id_field=f"{policy.metadata_domain}_source_row_id",
         )
 
@@ -137,21 +207,23 @@ def create_selection(request: SelectRequest) -> SelectResult:
         )
         return SelectResult(
             output_dir=_metadata_group_output_root(args),
-            selection_dirs=tuple(selection_dirs),
+            selection_dirs=tuple(path for path, _count in selection_dirs),
+            selected_counts=tuple(count for _path, count in selection_dirs),
         )
 
-    output_dir = _prepare_output_dir(
-        _selection_output_dir(args, policy=policy),
-        overwrite=args.overwrite,
-        label="Selection",
-    )
     selection = select_particles(landscape, policy=policy, source_metadata=source_metadata)
     selection = replace(selection, parent_run_id=_run_id_from_bundle(args.run_dir))
+    _validate_derived_selection_count(args, selection.selected_count)
     output_landscape = _selection_output_landscape(
         landscape,
         arrays=arrays,
         selected_particle_keys=selection.selected_particle_keys,
         materialize_full_rows=bool(args.write_selected_landscape),
+    )
+    output_dir = _prepare_output_dir(
+        _selection_output_dir(args, policy=policy),
+        overwrite=args.overwrite,
+        label="Selection",
     )
     _write_selection_outputs(
         args=args,
@@ -162,7 +234,8 @@ def create_selection(request: SelectRequest) -> SelectResult:
         selection=selection,
         output_dir=output_dir,
     )
-    return SelectResult(output_dir=output_dir, selection_dirs=(output_dir,))
+    return SelectResult(output_dir=output_dir, selection_dirs=(output_dir,),
+                        selected_counts=(len(selection.selected_particle_keys),))
 
 
 def _write_selection_outputs(
@@ -235,6 +308,7 @@ def _write_selection_outputs(
             "metadata_domain": selection.metadata_domain,
             "metadata_source_file": selection.metadata_source_file,
             "metadata_column": selection.metadata_column,
+            "metadata_source_details": to_json_safe(policy.metadata_source_details),
             "metadata_values": selection.metadata_values,
             "metadata_source_row_id_field": selection.metadata_source_row_id_field,
             "metadata_candidate_count": selection.metadata_candidate_count,
@@ -274,9 +348,9 @@ def _write_metadata_group_selections(
     landscape_metadata: dict[str, object],
     euler_metadata: dict[str, object],
     policy: SelectionPolicy,
-    source_metadata: pd.DataFrame,
+    source_metadata: pd.DataFrame | CsMetadataColumn,
     arrays: LandscapeArrays | None = None,
-) -> list[Path]:
+) -> list[tuple[Path, int]]:
     if not policy.split_by_metadata:
         raise ValueError("metadata split selection requires --split-by-value")
     values = _metadata_group_values_for_landscape(
@@ -284,46 +358,49 @@ def _write_metadata_group_selections(
         source_metadata=source_metadata,
         policy=policy,
     )
-    output_dirs: list[Path] = []
-    for value in values:
-        selection_id = _metadata_group_selection_id(policy, value)
+    selection_ids = [_metadata_group_selection_id(policy, value) for value in values]
+    if len(set(name.casefold() for name in selection_ids)) != len(selection_ids):
+        raise ValueError("Metadata split values collide after selection-name sanitization; use --metadata-value with separate names")
+    for name in selection_ids:
+        path = _metadata_group_output_root(args) / name
+        if path.exists() and (not path.is_dir() or not args.overwrite):
+            raise FileExistsError(f"Selection output already exists: {path}. Choose another --selection-id or use --overwrite.")
+    plans = []
+    for value, selection_id in zip(values, selection_ids):
         child_policy = replace(
-            policy,
-            selection_mode="metadata_value",
-            metadata_values=(value,),
-            selection_id=selection_id,
-            split_by_metadata=False,
+            policy, selection_mode="metadata_value", metadata_values=(value,),
+            selection_id=selection_id, split_by_metadata=False,
         )
-        output_dir = _prepare_output_dir(
-            _metadata_group_output_root(args) / selection_id,
-            overwrite=args.overwrite,
-            label="Selection",
-        )
-        selection = select_particles(
-            landscape,
-            policy=child_policy,
-            source_metadata=source_metadata,
-        )
+        selection = select_particles(landscape, policy=child_policy, source_metadata=source_metadata)
         selection = replace(selection, parent_run_id=_run_id_from_bundle(args.run_dir))
+        _validate_derived_selection_count(args, selection.selected_count)
+        plans.append((child_policy, selection))
+    if not plans:
+        raise ValueError("metadata_group selection found no non-missing metadata values")
+    output_dirs: list[tuple[Path, int]] = []
+    for child_policy, selection in plans:
         output_landscape = _selection_output_landscape(
-            landscape,
-            arrays=arrays,
-            selected_particle_keys=selection.selected_particle_keys,
+            landscape, arrays=arrays, selected_particle_keys=selection.selected_particle_keys,
             materialize_full_rows=bool(args.write_selected_landscape),
         )
-        _write_selection_outputs(
-            args=args,
-            landscape=output_landscape,
-            landscape_metadata=landscape_metadata,
-            euler_metadata=euler_metadata,
-            policy=child_policy,
-            selection=selection,
-            output_dir=output_dir,
+        output_dir = _prepare_output_dir(
+            _metadata_group_output_root(args) / selection.selection_id,
+            overwrite=args.overwrite, label="Selection",
         )
-        output_dirs.append(output_dir)
-    if not output_dirs:
-        raise ValueError("metadata_group selection found no non-missing metadata values")
+        _write_selection_outputs(
+            args=args, landscape=output_landscape, landscape_metadata=landscape_metadata,
+            euler_metadata=euler_metadata, policy=child_policy, selection=selection, output_dir=output_dir,
+        )
+        output_dirs.append((output_dir, selection.selected_count))
     return output_dirs
+
+
+def _validate_derived_selection_count(args: SelectRequest, count: int) -> None:
+    if args.write_selected_landscape and count == 0:
+        raise ValueError("Selected-derived landscape cannot be empty")
+    if args.recompute_sld and count < 2:
+        raise ValueError("SLD recomputation on a selected-derived landscape requires at least two particles")
+
 
 
 def _selection_landscape_from_arrays(
@@ -398,7 +475,8 @@ def _load_run_source_metadata_for_selection(
     args,
     *,
     policy: SelectionPolicy,
-) -> tuple[pd.DataFrame, Path]:
+    landscape: Landscape,
+) -> tuple[pd.DataFrame | CsMetadataColumn, Path, dict[str, object]]:
     if not getattr(args, "run_dir", None):
         raise ValueError("metadata selection requires --run-dir")
     if policy.metadata_domain not in {"ref", "mov"}:
@@ -412,11 +490,32 @@ def _load_run_source_metadata_for_selection(
     if not source_path_raw:
         raise ValueError(f"Cannot locate original {policy.metadata_domain} source metadata path")
     source_path = Path(source_path_raw)
+    is_cs = source_type in {"cryosparc", "cryosparc_cs", "cs"} or source_path.suffix.lower() == ".cs"
+    summary = _read_json_if_exists(Path(args.run_dir) / "run_summary.json") or {}
+    manifest = _read_json_if_exists(Path(args.run_dir) / "run_manifest.json") or {}
+    identity = (summary.get("source_identities") or manifest.get("source_identities") or {}).get(policy.metadata_domain)
+    details = {"format": "cryosparc_cs" if is_cs else "relion_star", "verification_status": "legacy_unverified"}
+    if is_cs and (not identity or not (identity.get("sha256") or identity.get("hash"))):
+        raise ValueError("CS metadata selection requires a recorded source SHA-256; rerun the analysis with verified inputs")
+    if identity:
+        verified = verify_source_identity(identity, operation="metadata selection")
+        source_path = Path(verified.resolved_path)
+        details.update(verification_status=verified.verification_status, source_identity=identity)
+    if is_cs:
+        row_field = f"{policy.metadata_domain}_source_row_id"
+        if row_field not in landscape.data.columns:
+            raise ValueError(f"Landscape missing metadata source-row field: {row_field}")
+        values = read_cryosparc_cs_column(source_path, str(policy.metadata_column))
+        column = CsMetadataColumn.from_source(values, landscape.data[row_field].to_numpy())
+        details.update(dtype=values.dtype.str, comparison="typed_exact", text_encoding="utf-8",
+                       missing_value_policy="exclude_empty_strings", invalid_row_policy="error",
+                       split_max_groups=CS_METADATA_MAX_GROUPS)
+        return column, source_path, details
     if source_type not in {"relion", "relion_star", "star"} and source_path.suffix.lower() != ".star":
-        raise ValueError("source metadata selection currently supports run-time RELION STAR files")
+        raise ValueError("metadata selection supports run-time CryoSPARC CS and RELION STAR sources")
     star = read_relion_star(source_path)
-    _resolve_cli_metadata_column(star.particles, str(policy.metadata_column))
-    return star.particles, source_path
+    _resolve_metadata_column_name(star.particles.columns, str(policy.metadata_column))
+    return star.particles, source_path, details
 
 
 def _resolve_run_source_info_for_metadata(run_dir: Path) -> dict[str, dict[str, str | None]]:
@@ -489,28 +588,18 @@ def _resolve_run_relative_path(path: str, run_dir: Path) -> Path:
     return candidate
 
 
-def _resolve_cli_metadata_column(source_metadata: pd.DataFrame, requested: str) -> str:
-    if requested in source_metadata.columns:
-        return requested
-    prefixed = requested if requested.startswith("_") else f"_{requested}"
-    if prefixed in source_metadata.columns:
-        return prefixed
-    unprefixed = requested[1:] if requested.startswith("_") else requested
-    if unprefixed in source_metadata.columns:
-        return unprefixed
-    raise ValueError(f"Source metadata missing column: {requested}")
-
-
 def _metadata_group_values_for_landscape(
     landscape: Landscape,
     *,
-    source_metadata: pd.DataFrame,
+    source_metadata: pd.DataFrame | CsMetadataColumn,
     policy: SelectionPolicy,
 ) -> tuple[str, ...]:
+    if isinstance(source_metadata, CsMetadataColumn):
+        return source_metadata.groups()
     row_field = policy.metadata_source_row_id_field or f"{policy.metadata_domain}_source_row_id"
     if row_field not in landscape.data.columns:
         raise ValueError(f"Landscape missing metadata source-row field: {row_field}")
-    column = _resolve_cli_metadata_column(source_metadata, str(policy.metadata_column))
+    column = _resolve_metadata_column_name(source_metadata.columns, str(policy.metadata_column))
     values_by_row_id = {
         int(index): _cli_metadata_value_key(value)
         for index, value in source_metadata[column].items()
@@ -529,38 +618,8 @@ def _metadata_group_values_for_landscape(
     return tuple(values)
 
 
-def _coerce_cli_source_row_id(value) -> int | None:
-    if isinstance(value, (bool, np.bool_)):
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not np.isfinite(numeric) or not numeric.is_integer():
-        return None
-    return int(numeric)
-
-
-def _cli_metadata_value_key(value) -> str | None:
-    if value is None or pd.isna(value):
-        return None
-    text = str(value).strip()
-    try:
-        numeric = float(text)
-    except ValueError:
-        return text
-    if np.isfinite(numeric) and numeric.is_integer():
-        return str(int(numeric))
-    return text
-
-
 def _metadata_group_selection_id(policy: SelectionPolicy, value: str) -> str:
-    prefix = policy.selection_id
-    if prefix:
-        return f"{_sanitize_selection_id_component(prefix)}_{_sanitize_selection_id_component(value)}"
-    column = _sanitize_selection_id_component(str(policy.metadata_column))
-    domain = _sanitize_selection_id_component(str(policy.metadata_domain))
-    return f"{domain}_{column}_{_sanitize_selection_id_component(value)}"
+    return f"{_sanitize_selection_id_component(policy.selection_id)}_{_sanitize_selection_id_component(value)}"
 
 
 def _sanitize_selection_id_component(value: str) -> str:
@@ -973,7 +1032,11 @@ def _prepare_output_dir(
     if path.exists() and not path.is_dir():
         raise ValueError(f"{label} output path exists and is not a directory: {path}")
     if path.exists() and not overwrite:
-        raise FileExistsError(f"{label} output directory already exists: {path}")
+        raise FileExistsError(
+            f"{label} output directory already exists: {path}. "
+            f"Choose another --selection-id to save a separate selection, "
+            f"or use --overwrite to replace {path.name!r}."
+        )
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -1034,15 +1097,9 @@ def _selection_policy_from_args(
 
 
 def _metadata_values_from_args(args) -> tuple[str, ...]:
-    values: list[str] = []
-    single_value = getattr(args, "metadata_value", None)
-    if single_value is not None:
-        values.extend(
-            normalized
-            for part in str(single_value).split(",")
-            if (normalized := _cli_metadata_value_key(part)) is not None
-        )
-    return tuple(values)
+    value = getattr(args, "metadata_value", None)
+    # Interpret values only after loading the source field's dtype.
+    return tuple(str(value).split(",")) if value is not None else ()
 
 
 def _internal_selection_mode(args) -> str:

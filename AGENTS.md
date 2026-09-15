@@ -19,9 +19,9 @@ The primary engineering goal is to make this workflow stable, auditable, scalabl
 For any behavior-changing work, read documents in this order:
 
 1. `AGENTS.md` — non-negotiable guardrails and current priority.
-2. `docs/architecture.md` — stable command, artifact, and policy contract.
-3. `docs/production_run_plan.md` — current implementation plan for production-scale `cryorole run` work.
-4. `docs/roadmap.md` — phase priorities and release direction.
+2. `docs/cli_reference.md` — public commands and policies.
+3. `docs/output_files.md` — artifact layout and scientific/display distinctions.
+4. `docs/workflow_ux.md` — workflow and selection boundaries.
 
 If a task changes persistence, CLI behavior, artifact layout, visualization, selection, export, or memory behavior, update the relevant document together with code and tests.
 
@@ -222,7 +222,7 @@ R_ro = np.matmul(np.swapaxes(R_ref, 1, 2), R_mov)
 8. Density reports should warn about large near-duplicate or near-identity RO concentrations and should count display-only SLD outliers. They distinguish `HIGH_SLD_PRESENT` (`sld_raw > 100`) from `DISCONTINUOUS_SLD_TAIL` and `DISTANCE_FLOOR_APPLIED`; none changes or excludes particles.
 9. Memory profiling and benchmarks should report peak RSS, wall time, row counts, and artifact sizes.
 
-Detailed implementation plan: `docs/production_run_plan.md`.
+For public run outputs and workflow behavior, see `docs/output_files.md` and `docs/workflow_ux.md`. Internal implementation plans are maintained separately from this public checkout.
 
 ---
 
@@ -275,7 +275,8 @@ Every implementation summary should list changed files and the tests run.
 
 ## Working style
 
+- Write documentation, plans, and other persistent records in English by default unless the user explicitly requests Chinese.
 - Prefer the smallest safe refactor that advances the current priority.
 - Keep scientific core, CLI, visualization, selection, export, and persistence responsibilities separated.
 - Record all interpretation-changing policies in reports/manifests.
-- Keep documents short enough to stay authoritative: update `architecture.md` for stable contracts, `production_run_plan.md` for current sprint details, and `roadmap.md` for phase priority.
+- Keep public documents task-oriented: update the CLI reference, output guide, and relevant workflow guide when behavior changes. Keep internal implementation plans outside the public documentation set.

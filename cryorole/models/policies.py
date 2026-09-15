@@ -116,6 +116,9 @@ class DensityPolicy:
     max_display_outlier_fraction: float = 0.002
     near_identity_ro_tolerance_rad: float = 1e-8
     near_duplicate_coordinate_tolerance_rad: float = 1e-8
+    ro_coincidence_min_group_size: int = 10
+    ro_coincidence_min_rows: int = 100
+    ro_coincidence_min_fraction: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -186,6 +189,7 @@ class SelectionPolicy:
     metadata_domain: str | None = None
     metadata_column: str | None = None
     metadata_values: tuple[str, ...] = ()
+    metadata_source_details: Mapping[str, object] = field(default_factory=dict)
     metadata_source_file: str | None = None
     metadata_source_row_id_field: str | None = None
     split_by_metadata: bool = False

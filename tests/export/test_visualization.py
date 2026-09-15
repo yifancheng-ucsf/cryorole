@@ -39,6 +39,30 @@ def _make_landscape(*, canonical: bool = False, n_points: int = 3) -> Landscape:
     return Landscape(data=data)
 
 
+@pytest.mark.parametrize("color_field", ["sld_raw", "sld_display"])
+def test_sld_colorbars_hide_field_names_without_changing_color_data(tmp_path, monkeypatch, color_field):
+    from matplotlib.figure import Figure
+
+    captured = []
+    original = Figure.colorbar
+
+    def capture(self, mappable, *args, **kwargs):
+        captured.append((kwargs.get("label"), np.asarray(mappable.get_array()).copy()))
+        return original(self, mappable, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "colorbar", capture)
+    landscape = _make_landscape()
+    report = write_landscape_visualizations(
+        landscape, tmp_path, coordinate_source="analysis", representation="both",
+        formats=("png",), color_field=color_field,
+    )
+    assert captured
+    assert all(label == "SLD" for label, _values in captured)
+    for _label, values in captured:
+        np.testing.assert_array_equal(np.sort(values), np.sort(landscape.data[color_field]))
+    assert report["color_field"] == color_field
+
+
 def test_visualization_writes_display_table_figures_and_report(tmp_path) -> None:
     report = write_landscape_visualizations(
         _make_landscape(),

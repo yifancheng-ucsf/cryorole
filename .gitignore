@@ -37,3 +37,11 @@ alignments/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Internal authoring documents are maintained outside the public checkout.
+/docs/AGENTS.md
+/docs/architecture.md
+/docs/production_run_plan.md
+/docs/roadmap.md
+/docs/github_release_file_list.md
+/docs/codex_prompt_*.md

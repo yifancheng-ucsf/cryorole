@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import sys
 
 from cryorole.canonicalize.service import CanonicalizeRequest, canonicalize
@@ -11,8 +13,17 @@ from cryorole.visualize import VisualizationRequest, visualize
 
 def select_command(args) -> int:
     result = create_selection(SelectRequest.from_namespace(args))
+    for path, count in zip(result.selection_dirs, result.selected_counts):
+        print(f"[cryorole] selection {path.name!r}: {count} particles; saved to {path}", file=sys.stderr)
+        print(f"Next: cryorole export --run-dir {_quote_argument(str(args.run_dir))} "
+              f"--selection-id {_quote_argument(path.name)}", file=sys.stderr)
     print(str(result.output_dir))
     return 0
+
+
+def _quote_argument(value: str) -> str:
+    """Format copyable guidance for PowerShell on Windows and POSIX shells elsewhere."""
+    return "'" + value.replace("'", "''") + "'" if os.name == "nt" else shlex.quote(value)
 
 
 def visualize_command(args) -> int:

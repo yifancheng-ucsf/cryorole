@@ -118,13 +118,14 @@ def verify_source_identity(
     *,
     relocated_path: str | Path | None = None,
     allow_unverified_source: bool = False,
+    operation: str = "export",
 ) -> SourceVerification:
     """Verify a current or explicitly relocated file against recorded identity."""
 
     if record is None or not _record_hash(record):
         if not allow_unverified_source:
             raise ValueError(
-                "Legacy run bundle has no verified source SHA-256; export is refused. "
+                f"Legacy run bundle has no verified source SHA-256; {operation} is refused. "
                 "Use --allow-unverified-source only after independently validating the source."
             )
         candidate = Path(relocated_path) if relocated_path is not None else _legacy_path(record)
@@ -157,7 +158,7 @@ def verify_source_identity(
     expected_hash = str(values.get("sha256") or values.get("hash"))
     if not hmac.compare_digest(observed_hash, expected_hash):
         raise ValueError(
-            "Source metadata SHA-256 mismatch; export is refused because recorded source-row "
+            f"Source metadata SHA-256 mismatch; {operation} is refused because recorded source-row "
             "provenance may refer to a different file."
         )
     expected_size = values.get("size_bytes")

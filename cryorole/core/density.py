@@ -80,6 +80,12 @@ def _validate_density_policy(policy: DensityPolicy) -> None:
         raise ValueError("near_identity_ro_tolerance_rad must be non-negative")
     if policy.near_duplicate_coordinate_tolerance_rad < 0:
         raise ValueError("near_duplicate_coordinate_tolerance_rad must be non-negative")
+    for name, minimum in (("ro_coincidence_min_group_size", 2), ("ro_coincidence_min_rows", 1)):
+        value = getattr(policy, name)
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+    if not np.isfinite(policy.ro_coincidence_min_fraction) or not 0 < policy.ro_coincidence_min_fraction <= 1:
+        raise ValueError("ro_coincidence_min_fraction must be finite and in (0, 1]")
 
 
 def _ratio(numerator: float, denominator: float) -> float:
@@ -431,8 +437,9 @@ def _build_density_report(
     resolved_sld_metric: str,
     display_diagnostics: dict[str, np.ndarray | float | int | str | None],
     near_identity_ro_tolerance_rad: float,
-    near_duplicate_coordinate_tolerance_rad: float,
+    policy: DensityPolicy,
 ) -> DensityReport:
+    near_duplicate_coordinate_tolerance_rad = policy.near_duplicate_coordinate_tolerance_rad
     floored = data[data["sld_was_floored"]]
     sld_unfloored_values = data["sld_unfloored"].to_numpy(dtype=float)
     sld_raw_values = data["sld_raw"].to_numpy(dtype=float)
@@ -445,10 +452,7 @@ def _build_density_report(
         coordinates_analysis,
         tolerance_rad=near_identity_ro_tolerance_rad,
     )
-    duplicate_stats = _near_duplicate_coordinate_stats(
-        coordinates_analysis,
-        tolerance_rad=near_duplicate_coordinate_tolerance_rad,
-    )
+    diagnostic = _ro_coordinate_diagnostic(coordinates_analysis, policy)
     n_points = len(data)
     n_floored = len(floored)
     high_sld_threshold = 100.0
@@ -461,8 +465,6 @@ def _build_density_report(
     warnings = _density_warnings(
         n_points=len(data),
         near_identity_count=near_identity_count,
-        duplicate_point_count=duplicate_stats["point_count"],
-        largest_duplicate_cluster=duplicate_stats["largest_cluster"],
         n_floored=n_floored,
         n_high_sld=n_high_sld,
         high_sld_threshold=high_sld_threshold,
@@ -471,6 +473,9 @@ def _build_density_report(
         n_tail_outliers=int(display_diagnostics["n_sld_display_outliers"]),
         largest_tail_jump_ratio=float(display_diagnostics["largest_tail_jump_ratio"]),
     )
+    if diagnostic["severity"] == "warning":
+        warnings += ("[RO_COORDINATE_CONCENTRATION] " + diagnostic["message"],)
+        warning_codes += ("RO_COORDINATE_CONCENTRATION",)
     floored_rows = []
     for index, row in floored.iterrows():
         floored_rows.append(
@@ -531,13 +536,14 @@ def _build_density_report(
         n_near_identity_ro=near_identity_count,
         fraction_near_identity_ro=float(near_identity_count / n_points) if n_points else 0.0,
         near_duplicate_coordinate_tolerance_rad=near_duplicate_coordinate_tolerance_rad,
-        n_near_duplicate_coordinate_points=int(duplicate_stats["point_count"]),
-        largest_near_duplicate_coordinate_cluster=int(duplicate_stats["largest_cluster"]),
+        n_near_duplicate_coordinate_points=int(diagnostic["coincident_rows"]),
+        largest_near_duplicate_coordinate_cluster=int(diagnostic["largest_group"]),
         high_sld_threshold=high_sld_threshold,
         n_high_sld_points=n_high_sld,
         fraction_high_sld_points=float(n_high_sld / n_points) if n_points else 0.0,
         warning_codes=warning_codes,
         warnings=warnings,
+        ro_coordinate_diagnostics=diagnostic,
     )
 
 
@@ -552,22 +558,47 @@ def _near_identity_ro_count(
     return int((norms <= tolerance_rad).sum())
 
 
-def _near_duplicate_coordinate_stats(
-    coordinates_analysis: np.ndarray,
-    *,
-    tolerance_rad: float,
-) -> dict[str, int]:
+def _ro_coordinate_diagnostic(coordinates_analysis: np.ndarray, policy: DensityPolicy) -> dict:
+    """Report quantized-coordinate coincidence, never particle identity."""
     coords = np.asarray(coordinates_analysis, dtype=float)
-    if len(coords) == 0 or tolerance_rad <= 0:
-        return {"point_count": 0, "largest_cluster": 0}
-    quantized = np.round(coords / tolerance_rad).astype(np.int64)
-    _, counts = np.unique(quantized, axis=0, return_counts=True)
-    duplicate_counts = counts[counts > 1]
-    if duplicate_counts.size == 0:
-        return {"point_count": 0, "largest_cluster": 0}
+    n = len(coords)
+    tolerance = policy.near_duplicate_coordinate_tolerance_rad
+    counts = np.empty(0, dtype=np.int64)
+    if n and tolerance > 0:
+        quantized = np.round(coords / tolerance).astype(np.int64)
+        _, counts = np.unique(quantized, axis=0, return_counts=True)
+    repeated = counts[counts > 1]
+    concentrated = int(counts[counts >= policy.ro_coincidence_min_group_size].sum())
+    fraction = concentrated / n if n else 0.0
+    warning = concentrated > 0 and (
+        concentrated >= policy.ro_coincidence_min_rows or fraction >= policy.ro_coincidence_min_fraction
+    )
+    coincident = int(repeated.sum())
+    largest = int(repeated.max()) if repeated.size else 0
+    severity = "warning" if warning else "info"
+    message = (
+        f"RO coordinate coincidences: {coincident}/{n} rows ({coincident / n:.2%}) " if n else
+        "RO coordinate coincidences: 0/0 rows (0.00%) "
+    )
+    message += (
+        f"share quantized coordinates (grid step={tolerance:g} rad; largest group={largest}). "
+    )
+    if warning:
+        message += (
+            f"Groups of at least {policy.ro_coincidence_min_group_size} rows contain {concentrated}/{n} rows. "
+            f"Heuristic warning: concentrated rows >= {policy.ro_coincidence_min_rows} or "
+            f">= {policy.ro_coincidence_min_fraction:.2%} of all rows. "
+        )
+    message += "This measures coordinate coincidence, not duplicate particle identity. No particles were removed."
     return {
-        "point_count": int(duplicate_counts.sum()),
-        "largest_cluster": int(duplicate_counts.max()),
+        "method": "componentwise_round_quantization", "grid_step_rad": tolerance,
+        "coincident_rows": coincident, "coincident_fraction": coincident / n if n else 0.0,
+        "largest_group": largest, "concentrated_rows": concentrated,
+        "concentrated_fraction": fraction, "severity": severity,
+        "policy": {"min_group_size": policy.ro_coincidence_min_group_size,
+                   "min_rows": policy.ro_coincidence_min_rows,
+                   "min_fraction": policy.ro_coincidence_min_fraction},
+        "particle_identity_assessed": False, "message": message,
     }
 
 
@@ -575,8 +606,6 @@ def _density_warnings(
     *,
     n_points: int,
     near_identity_count: int,
-    duplicate_point_count: int,
-    largest_duplicate_cluster: int,
     n_floored: int,
     n_high_sld: int,
     high_sld_threshold: float,
@@ -611,12 +640,6 @@ def _density_warnings(
         warnings.append(
             "many_near_identity_relative_orientations: "
             f"{near_identity_count}/{n_points} particles have near-identity RO"
-        )
-    if duplicate_point_count >= 10 and duplicate_point_count / n_points >= 0.01:
-        warnings.append(
-            "many_near_duplicate_ro_coordinates: "
-            f"{duplicate_point_count}/{n_points} particles are in near-duplicate "
-            f"RO coordinate clusters; largest_cluster={largest_duplicate_cluster}"
         )
     return tuple(warnings)
 
@@ -696,7 +719,7 @@ def compute_landscape_density(
         resolved_sld_metric=policy.sld_metric,
         display_diagnostics=display,
         near_identity_ro_tolerance_rad=policy.near_identity_ro_tolerance_rad,
-        near_duplicate_coordinate_tolerance_rad=policy.near_duplicate_coordinate_tolerance_rad,
+        policy=policy,
     )
     return Landscape(
         data=data,
@@ -794,10 +817,7 @@ def _build_density_report_from_arrays(
         arrays.coordinates_analysis,
         tolerance_rad=policy.near_identity_ro_tolerance_rad,
     )
-    duplicate_stats = _near_duplicate_coordinate_stats(
-        arrays.coordinates_analysis,
-        tolerance_rad=policy.near_duplicate_coordinate_tolerance_rad,
-    )
+    diagnostic = _ro_coordinate_diagnostic(arrays.coordinates_analysis, policy)
     n = arrays.n_points
     n_floored = int(len(floored_indices))
     high_sld_threshold = 100.0
@@ -810,8 +830,6 @@ def _build_density_report_from_arrays(
     warnings = _density_warnings(
         n_points=n,
         near_identity_count=near_identity,
-        duplicate_point_count=duplicate_stats["point_count"],
-        largest_duplicate_cluster=duplicate_stats["largest_cluster"],
         n_floored=n_floored,
         n_high_sld=n_high_sld,
         high_sld_threshold=high_sld_threshold,
@@ -820,6 +838,9 @@ def _build_density_report_from_arrays(
         n_tail_outliers=int(display_diagnostics["n_sld_display_outliers"]),
         largest_tail_jump_ratio=float(display_diagnostics["largest_tail_jump_ratio"]),
     )
+    if diagnostic["severity"] == "warning":
+        warnings += ("[RO_COORDINATE_CONCENTRATION] " + diagnostic["message"],)
+        warning_codes += ("RO_COORDINATE_CONCENTRATION",)
     display_vmax = display_diagnostics["sld_display_color_vmax"]
     return DensityReport(
         n_points=n,
@@ -863,11 +884,12 @@ def _build_density_report_from_arrays(
         n_near_identity_ro=near_identity,
         fraction_near_identity_ro=float(near_identity / n),
         near_duplicate_coordinate_tolerance_rad=policy.near_duplicate_coordinate_tolerance_rad,
-        n_near_duplicate_coordinate_points=int(duplicate_stats["point_count"]),
-        largest_near_duplicate_coordinate_cluster=int(duplicate_stats["largest_cluster"]),
+        n_near_duplicate_coordinate_points=int(diagnostic["coincident_rows"]),
+        largest_near_duplicate_coordinate_cluster=int(diagnostic["largest_group"]),
         high_sld_threshold=high_sld_threshold,
         n_high_sld_points=n_high_sld,
         fraction_high_sld_points=float(n_high_sld / n),
         warning_codes=warning_codes,
         warnings=warnings,
+        ro_coordinate_diagnostics=diagnostic,
     )

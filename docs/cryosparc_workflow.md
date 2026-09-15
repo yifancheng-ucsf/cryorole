@@ -110,6 +110,28 @@ cryorole export \
   --domain both
 ```
 
+## Select by CryoSPARC metadata
+
+Use the run-time source field directly, without converting CS to STAR:
+
+```bash
+cryorole select --run-dir cryorole_outputs --selection-id ref_classes_01 --mode metadata --metadata-domain ref --metadata-column alignments3D/class --metadata-value 0,1
+cryorole select --run-dir cryorole_outputs --selection-id ref_class --mode metadata --metadata-domain ref --metadata-column alignments3D/class --split-by-value
+cryorole export --run-dir cryorole_outputs --selection-id ref_classes_01
+```
+
+The field must exist in the chosen source; class values are not renumbered.
+Choose ref or mov explicitly. Selection uses the full parent landscape's
+recorded source-row indices, including when run reordered or dropped unmatched
+input rows. Source content must match its recorded SHA-256.
+
+Supported CS fields are scalar integer (including uint64), boolean, and UTF-8
+text. Text comparison is exact; empty strings are excluded and counted as
+missing. Float/vector fields and invalid UTF-8 are rejected. Split writes one
+standard selection per non-missing matched value, with at most 100 groups.
+Name collisions fail before writing even with overwrite. See the
+[CLI reference](cli_reference.md#cryosparc-metadata-fields) for value syntax.
+
 ## Outputs
 
 The run bundle is written under:

@@ -53,3 +53,4 @@ class DensityReport:
     fraction_high_sld_points: float = 0.0
     warning_codes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    ro_coordinate_diagnostics: Mapping[str, Any] | None = None

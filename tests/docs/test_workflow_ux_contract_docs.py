@@ -4,14 +4,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_architecture_records_workflow_ux_scientific_boundaries() -> None:
-    text = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+def test_public_tutorial_records_workflow_ux_scientific_boundaries() -> None:
+    text = (ROOT / "docs" / "workflow_ux.md").read_text(encoding="utf-8")
     for phrase in (
         "cryorole preflight",
         "cryorole explore",
         "READY_WITH_WARNINGS",
-        "draft selection",
-        "exact full parent landscape",
+        "An evaluated draft is not a Selection",
+        "Every exact count and Confirm evaluates the full parent landscape",
         "127.0.0.1",
         "cryorole status",
         "cryorole next",

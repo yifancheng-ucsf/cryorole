@@ -74,3 +74,22 @@ Non-interactive mode never waits for input. Run execution requires explicit
 The run ID or parent landscape hash changed after the page loaded, or the
 selection ID already exists. Reload from the current completed run and choose a
 new ID. This prevents stale drafts and accidental overwrite.
+
+
+## Do RO coordinate coincidences mean duplicate particles?
+
+No. The diagnostic groups identical quantized RO coordinates (default grid
+step `1e-8 rad`). Dispersed small groups are informational. Groups of at least
+10 rows contribute to a concentration warning when they contain at least 100
+rows or 1% of all rows. These are recorded heuristic thresholds, not a claim
+about particle identity or image duplication. Existing input identity/matching
+checks retain their failure behavior; row-aligned mode does not assess identity
+uniqueness. No particles are removed by this coordinate diagnostic.
+
+## What if an older offline 3D HTML viewer is blank?
+
+Older generated viewers could contain an invalid JavaScript newline in the
+hover tooltip. Regenerate into a new visualization ID using an updated version;
+a Python upgrade alone does not rewrite existing HTML files. The generator now
+has executable JavaScript regression coverage. Browser rendering and interaction
+must be validated separately from successful file writing or script parsing.

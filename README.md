@@ -1,398 +1,372 @@
-# cryoROLE
+# cryoROLE 2.0
 
-cryoROLE (cryo-EM Relative Orientation LandscapE) quantifies inter-domain rotational motion in single-particle cryo-EM by computing the per-particle relative orientation between two independently refined near-rigid domains.
+**Understand inter-domain rotation, explore orientation landscapes, and export particle subsets for reconstruction.**
 
-It is designed for cryo-EM projects in which two domains, modules, or subcomplexes can be treated as near-rigid bodies and refined separately from the same particle set. For each matched particle, cryoROLE computes the relative orientation (RO) between a reference domain and a moving domain, represents the particle population as a relative-orientation landscape, and enables landscape-guided particle selection for downstream RELION or CryoSPARC reconstruction.
+cryoROLE (cryo-EM Relative Orientation LandscapE) compares the per-particle orientations of two separately refined, approximately rigid domains. Start with CryoSPARC `.cs` or RELION `.star` metadata; obtain a relative-orientation landscape, plots, and selected metadata for downstream refinement or reconstruction.
 
-## What cryoROLE does
+The public interface is the `cryorole` command. The current package version is `2.0.0a1` (pre-release).
 
-Given two per-domain pose metadata files, cryoROLE can:
+[Get started](#your-first-analysis) · [Visualize](#visualize-create-and-customize-plots) · [Select](#select-save-particle-subsets) · [Find outputs](#find-your-results) · [Help](#common-questions)
 
-1. match particles between the two domain refinements;
-2. normalize RELION or CryoSPARC pose conventions into a common internal representation;
-3. compute per-particle relative orientations,
+## Contents
 
-   ```text
-   RO = R_ref^-1 R_mov
-   ```
+- [What can I do with cryoROLE?](#what-can-i-do-with-cryorole)
+- [Before you start](#before-you-start)
+- [Install](#install)
+- [Your first analysis](#your-first-analysis)
+- [Explore the workflow](#explore-the-workflow)
+- [Find your results](#find-your-results)
+- [Common questions](#common-questions)
+- [Advanced workflows and documentation](#advanced-workflows-and-documentation)
+- [Citation](#citation) and [license](#license)
 
-4. estimate local sampling density in rotation-vector (RV) space;
-5. visualize raw or motion-aligned RO landscapes;
-6. select particles from defined regions of the landscape; and
-7. export the selected source metadata for reconstruction or further refinement.
+## What can I do with cryoROLE?
 
-cryoROLE does not replace 3D classification, 3D variability analysis, cryoDRGN, 3DFlex, or other continuous-heterogeneity methods. It is a complementary, physically interpretable SO(3)-based analysis for cases where domain-specific poses are already available.
+| Your task | Use |
+| --- | --- |
+| Compare two domains' orientations for each matched particle | `run` |
+| View the population as 2D projections, 1D distributions, or interactive 3D | `visualize` |
+| Express the landscape in a frame aligned with its dominant motion | `canonicalize` (optional) |
+| Preview a region interactively and confirm a particle subset | `explore` |
+| Save subsets by orientation, SLD, coordinate range, random sampling, or source metadata | `select` |
+| Export the selected original metadata for CryoSPARC or RELION | `export` |
 
-## Status
+cryoROLE starts from existing domain-specific pose estimates. It does not perform the domain refinements or reconstruct maps. Its relative orientation is `RO = R_ref^-1 R_mov`. SLD summarizes local sampling density in the orientation landscape; higher SLD indicates more densely sampled regions under the recorded density policy.
 
-This repository contains the cryoROLE 2.0 command-line workflow. The package metadata version is currently `2.0.0a1`.
+## Before you start
 
-The command-line interface is the supported public interface. Core
-Productionization and the first Workflow UX milestone are implemented:
-side-effect-free preflight, artifact-derived status/next guidance, an offline
-interactive explorer, and an optional conservative guide now sit on top of the
-stable run-bundle, selection, and export contracts.
+Prepare two pose metadata files from separate refinements of approximately rigid domains of the **same particle population**. Choose one domain as **ref** (reference) and the other as **mov** (moving). Each matched particle must have a pose for both domains.
 
-## Installation
+| Input | Required information | Default matching |
+| --- | --- | --- |
+| **CryoSPARC `.cs`** | `uid` and `alignments3D/pose` | Particle `uid`; no STAR conversion needed |
+| **RELION `.star`** | Particle identities and `Rot/Tilt/Psi` pose columns | `_rlnTomoParticleName` first, otherwise an unambiguous `_rlnImageName` / `rlnImageName` column |
 
-We recommend installing cryoROLE in a dedicated conda environment, then installing the package from a GitHub checkout.
+The files need not have the same row order when identity matching is available. Preflight checks the match and reports unmatched particles or other issues. Duplicate identities and zero matches block the normal run; overlap below 50% also blocks it unless explicitly overridden after review.
+
+Use `--row-aligned` only when you know that corresponding rows describe the same particle and the row counts agree. It is an assertion about your inputs, not a general fix for matching errors. For STAR matching that needs explicit keys or preparation, see the [RELION workflow](docs/relion_workflow.md).
+
+## Install
+
+From a terminal with Git and Conda available:
 
 ```bash
 git clone https://github.com/yifancheng-ucsf/cryorole.git
 cd cryorole
-
 conda create -n cryorole python=3.10 -y
 conda activate cryorole
-
 python -m pip install .
 cryorole --help
 ```
 
-cryoROLE requires Python 3.9 or newer. Core Python dependencies are declared in
-`pyproject.toml` and include `numpy`, `scipy`, `pandas`, `matplotlib`, and
-`Pillow`.
+The final command should list the available commands. Python 3.9 or newer is required; pip installs the core Python dependencies. Basic analysis and plotting do not require ChimeraX or FFmpeg.
 
-For an editable development/test installation:
+See [Installation](docs/installation.md) for other installation routes and development setup. Commands below use single lines so they can be copied into Bash or PowerShell. Replace example file paths with your own and quote paths containing spaces.
 
-```bash
-python -m pip install -e ".[test]"
-python -m pytest
-```
+## Your first analysis
 
-The repository also provides `environment.yml`, which creates an editable conda environment from the repository root:
+This example uses **CryoSPARC `.cs` inputs** and saves the analysis in `my_run`. Run the steps in order. Keep your original input files available for later export.
+
+### 1. Check your inputs
 
 ```bash
-conda env create -f environment.yml
-conda activate cryorole
-cryorole --help
+cryorole preflight --ref ref_domain.cs --mov mov_domain.cs
 ```
 
-See [Installation](docs/installation.md) for additional setup and verification notes.
+This checks the files and particle matching without creating an analysis directory. `READY` means the check passed; `READY_WITH_WARNINGS` means read and resolve or consciously accept the reported issues; `BLOCKED` means correct the inputs before running. Exit codes are 0, 1, and 2 respectively.
 
-## Input requirements
+### 2. Compute the landscape
 
-cryoROLE starts from two per-domain pose metadata files generated from the same particle set:
+```bash
+cryorole run --ref ref_domain.cs --mov mov_domain.cs --output-dir my_run
+```
 
-- one metadata file for the reference domain;
-- one metadata file for the moving domain;
-- RELION STAR (`.star`) or CryoSPARC (`.cs`) input;
-- enough particle identity information to match the two pose tables.
+Open **`my_run/run_report.md`** first. It explains matching, diagnostics, output files, and next commands. Then open the PNGs in **`my_run/visualizations/quicklook/`**: Euler and rotation-vector projections for all particles, SLD ≥ 1, and the top 40% by SLD, plus a log-SLD distribution.
 
-The two domains should be approximately rigid over the range of motion being analyzed. If a domain undergoes major internal deformation, a single per-particle orientation may no longer be a meaningful descriptor for that domain.
+These are automatic previews. You already have a computed landscape; use [visualize](#visualize-create-and-customize-plots) when you want additional views or different display settings.
 
-### Particle matching
+### 3. Save a particle subset
 
-By default, cryoROLE matches particles by identity rather than assuming row order.
+After inspecting your landscape, choose a region and give it a name:
 
-For CryoSPARC `.cs` inputs, the default identity key is `uid`.
+```bash
+cryorole select --run-dir my_run --selection-id region_01 --mode radius --center 0 0 0 --radius 15
+```
 
-For RELION STAR inputs, cryoROLE first tries `_rlnTomoParticleName` when available, then `_rlnImageName` / `rlnImageName` when the resolved column is unambiguous.
+**The center and radius are demonstration values, not recommended scientific cutoffs.** Replace them with values appropriate to your result. Here the center is in raw Euler degrees and the radius is 15 degrees of SO(3) rotation distance. The command reports the selected count and saves the subset under `my_run/selections/region_01/`.
 
-Use `--row-aligned` only when row `N` in the reference metadata is known to describe the same particle as row `N` in the moving-domain metadata. If safe automatic matching is not possible for STAR files, use `cryorole align --key ...` to prepare row-aligned inputs, or manually pre-align the metadata before running with `--row-aligned`.
+For help choosing a center, use [explore](#explore-preview-and-confirm-interactively). For other selection rules, see [select modes](#select-save-particle-subsets).
 
-## Workflow
+### 4. Export the selected metadata
 
-The public workflow is:
+```bash
+cryorole export --run-dir my_run --selection-id region_01
+```
+
+By default, both source domains are exported in their original metadata format. For these inputs, look for:
 
 ```text
-preflight -> run -> status/next -> [canonicalize] -> explore/visualize -> confirm/select -> export
+my_run/exports/region_01/ref/selected_ref.cs
+my_run/exports/region_01/mov/selected_mov.cs
 ```
 
-| Step | Role |
-|---|---|
-| `preflight` / `run --dry-run` | Validates inputs, matching, pose schema, and resources without creating a run bundle. |
-| `align` | Optional STAR pre-processing step that prepares row-aligned metadata when default matching is insufficient. |
-| `run` | Computes the raw RO landscape and writes the run bundle. |
-| `status` / `next` | Reads actual artifacts and proposes exact required, recommended, and optional commands. |
-| `canonicalize` | Optionally derives a motion-aligned coordinate frame for interpretation and comparison. It does not overwrite the raw landscape. |
-| `visualize` | Creates display-only plots and display tables from raw, canonical, or selected rows. |
-| `explore` | Opens a localhost-only offline explorer; clicking/evaluation makes a draft, and Confirm writes a standard selection. |
-| `select` | Creates an explicit, auditable particle-selection artifact. |
-| `export` | Subsets the original source metadata using the recorded selection and source-row provenance. |
-| `guide` | Conservatively combines preflight/status/next without silently making scientific decisions. |
+These are metadata subsets for downstream CryoSPARC use. Export preserves source poses and does not modify the original files. See the [CryoSPARC workflow](docs/cryosparc_workflow.md) for more details.
 
-A key design rule is that visualization filters are display-only. They do not create scientific selections and do not modify the raw or canonical landscape. To generate particles for downstream reconstruction, use `cryorole select` followed by `cryorole export`.
+### Using RELION STAR instead
 
-Each command writes provenance into the run bundle so selections and exports can be audited later.
-
-## Quick start
-
-The examples below use the default run directory, `cryorole_outputs/`, and assume no custom run directory was requested. To choose a different run bundle name, add `--output-dir RUN_DIR` to `cryorole run`, then pass that same directory to downstream commands with `--run-dir RUN_DIR`.
-
-### RELION STAR inputs
-
-If the reference and moving-domain STAR files contain safe particle identity columns, run:
+Replace the first two commands with the following, then follow the same inspection, selection, and export steps. This is an alternative start: use a fresh `my_run` directory if you already ran the CryoSPARC example.
 
 ```bash
 cryorole preflight --ref ref_domain.star --mov mov_domain.star
-cryorole run --ref ref_domain.star --mov mov_domain.star
+cryorole run --ref ref_domain.star --mov mov_domain.star --output-dir my_run
 ```
 
-If the STAR files cannot be matched safely by default, prepare aligned STAR files first:
+Automatic export will produce `.star` subsets. If matching is blocked, inspect the reported identity issue and consult the [RELION workflow](docs/relion_workflow.md) before proceeding.
 
-```bash
-cryorole align --ref ref_domain.star --mov mov_domain.star
-
-cryorole run \
-  --ref alignments/default/aligned_ref.star \
-  --mov alignments/default/aligned_mov.star \
-  --row-aligned
-```
-
-Use direct row-aligned mode only when you already know both files are in the same particle order:
-
-```bash
-cryorole run --ref aligned_ref.star --mov aligned_mov.star --row-aligned
-```
-
-### CryoSPARC `.cs` inputs
-
-For CryoSPARC input, cryoROLE reads `.cs` files directly and matches particles by `uid`:
-
-```bash
-cryorole run --ref ref_domain.cs --mov mov_domain.cs --dry-run
-cryorole run --ref ref_domain.cs --mov mov_domain.cs
-```
-
-`preflight` and `run --dry-run` use the same validation service as the real
-run, create no run directory, and report `READY`, `READY_WITH_WARNINGS`, or
-`BLOCKED`. Warnings return exit code 1 and blocked inputs return 2.
-
-### Inspect the raw landscape
-
-`cryorole run` writes seven flat quick-look PNGs: Euler/RV triptychs for all
-particles, `sld_raw >= 1`, and the top 40%, plus a full-data log-SLD
-distribution. `run_report.md` explains the outputs and warnings. Generate
-an independent compact view with the explicit visualization command. Its
-default is two PNG triptychs (Euler and RV) for `sld_display >= 1`:
-
-```bash
-cryorole visualize --run-dir cryorole_outputs --space raw
-cryorole visualize --run-dir cryorole_outputs --space raw --view 2d,1d
-cryorole visualize --run-dir cryorole_outputs --space raw --view 3d
-```
-
-The 1D option uses every row that passes the display filters. The 3D default is
-a self-contained offline viewer; it is exploratory and cannot create a
-Selection.
-
-For local linked Euler/RV views and exact radius-selection previews:
-
-```bash
-cryorole explore --run-dir cryorole_outputs --space raw
-```
-
-The explorer binds only to `127.0.0.1`, uses packaged assets with no CDN, and
-may downsample points only for display. Exact counts and Confirm always evaluate
-the full parent landscape in Python using the same SO(3) evaluator as
-`cryorole select`. No Selection is written until Confirm.
-
-### Inspect a landscape interactively in ChimeraX
-
-The standalone `cryorole_chimerax_viewer.py` script registers display-only
-ChimeraX commands for cryoROLE landscape CSV files. Load it once in ChimeraX,
-then open a raw or canonical landscape CSV:
+## Explore the workflow
 
 ```text
-open /path/to/cryorole_chimerax_viewer.py
-cryorole open /path/to/raw_landscape.csv
+preflight → run → inspect → select → export
+                    ↳ optional canonicalize, visualize, or interactive explore
 ```
 
-The viewer can switch between Euler and rotation-vector coordinates, color by
-SLD, and apply threshold or top-fraction display filters. It does not perform
-RO analysis, create scientific selections, or modify source metadata.
+The examples below reuse `my_run`. Plot settings change what you see; a saved selection records which particles you choose.
 
-### Canonicalize the landscape
+### Run: compute once, inspect the report
 
-Canonicalization is optional. It re-expresses the landscape in a motion-aligned coordinate frame so that the dominant motion is easier to view and compare. It does not change the raw RO facts.
+`run` computes RO and SLD, writes the raw landscape and reports, and generates quick-look images. The default density metric is Euclidean kNN distance in rotation-vector space; SO(3) geodesic SLD is an explicit alternative through `--sld-metric so3_geodesic`.
+
+Use `--output-dir` to name each analysis. Add `--no-visualize` to skip automatic preview images; the landscape and `run_report.md` are still written. Subsequent commands use `--run-dir` to read the saved analysis without repeating `run`.
+
+### Canonicalize: optionally align the display frame
+
+Canonicalization re-expresses the landscape in a motion-aligned frame. It is useful when the dominant motion is hard to interpret in raw coordinates, and is optional for selection and export.
 
 ```bash
-cryorole canonicalize --run-dir cryorole_outputs
-cryorole visualize --run-dir cryorole_outputs --space canonical
+cryorole canonicalize --run-dir my_run
+cryorole visualize --run-dir my_run --space canonical --visual-id canonical_overview
 ```
 
-### Test a moving-domain rotation
+Results are saved under `my_run/canonical/default/`, including a reusable `canonical_frame.json` and preview images. Raw results remain intact. Subsequent plotting or coordinate-based selection must use `--space canonical` to work in this frame.
 
-The standalone diagnostic script applies one extrinsic fixed-axis ZYX rotation
-to every RO by right multiplication and inherits the parent SLD values:
+| Control | Use |
+| --- | --- |
+| `--canonical-id NAME` | Name the frame/result; default is `default` |
+| `--fit-top 0.4` | Fit using the highest-SLD fraction; default is 40% |
+| `--positive-side low` or `high` | Choose the density-skew direction of the axes; default is `low` |
+| `--use-frame PATH` | Apply an existing `canonical_frame.json` instead of fitting |
+
+The fit fraction controls frame fitting, not which particles are retained. Canonical axis directions do not define an absolute biological clockwise/counterclockwise direction.
+
+### Visualize: create and customize plots
+
+Start with the default two PNG figures: three Euler projections and three rotation-vector projections, colored by **SLD**, for rows with `sld_display >= 1`.
 
 ```bash
-python scripts/rotate_landscape.py \
-  --input cryorole_outputs \
-  --space raw \
-  --rotation-euler 20 10 0 \
-  --output-dir rotated_landscape
-
-cryorole visualize --run-dir rotated_landscape --space raw
+cryorole visualize --run-dir my_run --visual-id overview
 ```
 
-Use `--space canonical --canonical-id ID` to define the input rotation in an
-existing canonical frame. The script writes a derived landscape bundle only;
-it does not modify or export source STAR/CS poses. SLD is inherited rather than
-recomputed so the same particles keep the same visualization colors.
+Open the files in `my_run/visualizations/raw/overview/`. Each visualization also writes `visualization_report.json` with its filters, counts, settings, and generated files.
 
-### Export an offline animation bundle
-
-`cryorole animate` implements SO(3) trajectory generation, synchronized
-landscape PNG frames, and ChimeraX script export. The default `script-only`
-mode does not require ChimeraX:
+**Choose your views:**
 
 ```bash
-cryorole animate \
-  --run-dir cryorole_outputs \
-  --coordinate-set raw \
-  --path-csv waypoints.csv \
-  --path-space rv \
-  --chimerax-session prepared_scene.cxs \
-  --reference-model-id "#1" \
-  --moving-model-id "#2" \
-  --pivot 0 0 0 \
-  --baseline-ro identity \
-  --map-frame raw \
-  --output-dir animation_output
+cryorole visualize --run-dir my_run --view 2d,1d --visual-id distributions
+cryorole visualize --run-dir my_run --view 3d --visual-id interactive_3d
 ```
 
-Add `--render-mode execute --chimerax-bin PATH --no-encode` to request
-validated structure and composite frames. Omit `--no-encode` and provide
-`--ffmpeg-bin PATH --ffprobe-bin PATH` for validated H.264 MP4 output.
-Animation display filters and legacy style are shared with
-`cryorole visualize`; Linux execution uses ChimeraX offscreen mode and requires
-an explicit renderer-completion status plus valid frames. Composition preserves
-the full input frames and their aspect ratios; no frame set is automatically
-deleted. Animation filters are display-only and never create selections.
-Repeat either model-ID option to define disjoint rigid groups; all movers use
-the same absolute trajectory delta from their own saved scene transforms.
+The second command writes `landscape_3d.html`: open it locally in a browser to inspect the point cloud, change representation, rotate, zoom, reset, and hover over points. It is self-contained and needs no network connection. See the [3D troubleshooting note](#why-does-an-older-3d-html-open-blank) for older blank viewers and the current validation limitation.
 
-### Select particles
+| Task | Options and behavior |
+| --- | --- |
+| Choose views | `--view 2d`, `1d`, `3d`, or a combination such as `2d,1d,3d` |
+| Choose coordinates | `--representation euler`, `rotvec`, or `both` (default); Euler axes are degrees, RV axes radians |
+| Choose raw/canonical | `--space raw` (default) or `canonical`; use `--canonical-id` for a named canonical result |
+| Show all candidate rows | `--all` removes the default SLD threshold; 2D/3D point limits still apply |
+| Filter by density | `--sld-threshold 1.5` or `--top-fraction 0.4`; these and `--all` are mutually exclusive |
+| Filter by coordinates | Repeat `--range AXIS:LOWER:UPPER`, e.g. `--range alpha:-30:30` |
+| Adjust only the viewport | Repeat `--axis-limit AXIS:LOWER:UPPER`; this does not filter rows |
+| Style points | `--point-size 2 --opacity 0.5`; opacity ranges from 0 (transparent) to 1 (opaque) |
+| Style colors | `--colormap`, `--vmin`, `--vmax`; default colormap is `rainbow_r` |
+| Limit displayed points | `--max-points 50000`; deterministic sampling for 2D/3D only |
+| Configure 1D | `--bins auto`, `--hist-mode percent` are defaults; `--kde` adds optional coordinate smoothing |
+| Choose static output | `--format png` or, for example, `--format png,pdf`; `--3d-mode static` selects static 3D |
+| Save another plot configuration | `--visual-id NAME`; default is `default`. Choose a new name or explicitly use `--overwrite` to replace that visualization |
 
-For a radius selection around a canonical Euler center:
+For example, show all candidate rows in an Euler window with lighter points:
 
 ```bash
-cryorole select \
-  --run-dir cryorole_outputs \
-  --selection-id state_1 \
-  --space canonical \
-  -c 13 0 14 \
-  -r 6
+cryorole visualize --run-dir my_run --all --representation euler --range alpha:-30:30 --opacity 0.4 --point-size 2 --visual-id alpha_window
 ```
 
-By default, radius selection uses SO(3) geodesic distance, not simple Euclidean distance in Euler-angle space.
-The center values are usually chosen after inspecting the raw or canonical visualizations.
-
-### Export selected metadata
+Or change the viewport without filtering the candidate rows:
 
 ```bash
-cryorole export \
-  --run-dir cryorole_outputs \
-  --selection-id state_1 \
-  --domain both
+cryorole visualize --run-dir my_run --all --representation euler --axis-limit alpha:-30:30 --visual-id alpha_viewport
 ```
 
-Export subsets the original source metadata using recorded source-row provenance. It does not rewrite source poses with canonical or display coordinates.
+1D distributions use **every row passing the display filters**, independently of the 2D/3D plotting sample. Optional KDE smooths a coordinate distribution; it is not an SO(3) density estimate. Color bars read `SLD`; reports retain the actual field (`sld_display` for public visualization). Color limits do not rewrite stored SLD.
 
-## Common commands
-
-Use `cryorole COMMAND --help` for the exact current options.
+### Explore: preview and confirm interactively
 
 ```bash
-cryorole preflight --ref REF_METADATA --mov MOV_METADATA [--json REPORT.json]
-cryorole run --ref REF_METADATA --mov MOV_METADATA --dry-run
-cryorole align --ref REF.star --mov MOV.star
-cryorole run --ref REF_METADATA --mov MOV_METADATA [--output-dir RUN_DIR]
-cryorole status --run-dir RUN_DIR
-cryorole next --run-dir RUN_DIR
-cryorole guide --run-dir RUN_DIR --non-interactive
-cryorole canonicalize --run-dir cryorole_outputs
-cryorole visualize --run-dir cryorole_outputs --space canonical
-cryorole explore --run-dir cryorole_outputs --space canonical --canonical-id default
-cryorole animate --run-dir cryorole_outputs --path-csv PATH.csv --path-space rv --chimerax-session SCENE.cxs --reference-model-id "#1" --moving-model-id "#2" --pivot 0 0 0 --baseline-ro identity --map-frame raw --output-dir ANIMATION_DIR
-cryorole select --run-dir cryorole_outputs --selection-id state_1 --space canonical -c A B C -r DEG
-cryorole export --run-dir cryorole_outputs --selection-id state_1 --domain both
+cryorole explore --run-dir my_run --space raw
 ```
 
-## Outputs
+Use the local browser page to inspect linked Euler/RV projections and evaluate a radius-selection draft. Review the exact count, then use **Confirm** and supply a new selection name to save it. Clicking or evaluating alone does not create a selection. Keep the local server running while using the page.
 
-A standard cryoROLE run bundle records numeric arrays, flat tables, reports, visualizations, selections, exports, and provenance:
+| Tool | What it saves |
+| --- | --- |
+| `visualize --view 3d` | A display-only HTML viewer; no selection |
+| `explore` | A standard selection only after explicit Confirm |
+| `select` | A standard selection from the supplied command parameters |
+
+Explore serves packaged assets on `127.0.0.1` without a CDN. Display sampling affects only the preview. Exact evaluation and Confirm use the full parent landscape and the shared Python SO(3) selection evaluator. See the [interactive tutorial](docs/workflow_ux.md).
+
+### Select: save particle subsets
+
+Every selection needs a **user-chosen name** through `--selection-id`, for example `region_02` or `high_sld`. There is no default name. Results go under `my_run/selections/NAME/`; the command prints the count, location, and a suggested export command.
+
+Use a different name for each subset. Existing names are protected; `--overwrite` explicitly replaces that selection's artifacts (the generated child names in metadata split mode). IDs must be names, not paths.
+
+All modes evaluate the full parent landscape, independently of visualization filters or sampling. Coordinates default to `--space raw`. To select in an existing canonical frame, add `--space canonical` and, if needed, `--canonical-id NAME`. Canonical ID applies only to canonical space.
+
+| Mode | Required controls | Useful choices and semantics |
+| --- | --- | --- |
+| `radius` (default) | `--center A B C` and exactly one of `--radius` / `--radius-rad` | Euler center in degrees by default; `--center-representation rotvec` takes radians. `--metric so3` is the default; `rotvec` explicitly requests Euclidean RV distance. Radius units are independent of center units. |
+| `threshold` | At least one of `--sld-min` / `--sld-max` | Inclusive original `sld_raw` bounds, independent of display colors; both may be supplied |
+| `range` | At least one `--range-bound AXIS:LOWER:UPPER` | Use Euler `alpha/beta/gamma` in degrees **or** RV `x/y/z` in radians; do not mix representations |
+| `random` | `--fraction F`, where `0 < F <= 1` | `--seed` sets reproducibility; selects `ceil(F × parent row count)` rows without replacement |
+| `metadata` | `--metadata-domain`, `--metadata-column`, and either `--metadata-value` or `--split-by-value` | Domain must be explicit (`ref` or `mov`); supports run-time CryoSPARC CS and RELION STAR metadata |
+
+The numeric values below illustrate syntax. Choose bounds appropriate to your data.
+
+**Around an orientation:** a raw Euler center in degrees, with a 6-degree SO(3) radius. This does not use Euclidean distance between Euler angles.
+
+```bash
+cryorole select --run-dir my_run --selection-id region_02 --mode radius --center 13 0 14 --radius 6
+```
+
+**By SLD:** keep rows with original SLD at least 2. Add `--sld-max` for an upper limit. Bounds include their endpoints.
+
+```bash
+cryorole select --run-dir my_run --selection-id high_sld --mode threshold --sld-min 2
+```
+
+**By coordinate range:** select an Euler alpha interval. Repeat `--range-bound` for multiple axes; their constraints are intersected. Blank endpoints are open (e.g. `alpha::20`). Euler lower > upper wraps across the periodic seam; RV bounds must be ordered. Repeating the same axis uses the last bound.
+
+```bash
+cryorole select --run-dir my_run --selection-id alpha_subset --mode range --range-bound alpha:-20:20
+```
+
+**A reproducible random subset:** choose 10% with a fixed seed. Omitting the seed uses fresh randomness and records a null seed.
+
+```bash
+cryorole select --run-dir my_run --selection-id sample_10pct --mode random --fraction 0.1 --seed 7
+```
+
+**By source metadata:** if the reference CryoSPARC file contains `alignments3D/class`, select classes 0 and 1, or create one selection per matched class value:
+
+```bash
+cryorole select --run-dir my_run --selection-id ref_classes_01 --mode metadata --metadata-domain ref --metadata-column alignments3D/class --metadata-value 0,1
+cryorole select --run-dir my_run --selection-id ref_class --mode metadata --metadata-domain ref --metadata-column alignments3D/class --split-by-value
+```
+
+Use a field and values actually present in the run-time source; not every CS file contains a class field. Class numbers are used as stored, without renumbering. For a RELION run, use its column (for example `rlnClassNumber`) and class values instead. Split results use names such as `ref_class_0` with filename-safe value components.
+
+CS supports scalar integers, booleans, and text. Integer comparison preserves full precision; booleans accept `true`, `false`, `1`, or `0`. UTF-8 text matches exactly, including leading zeros and spaces; empty strings are counted as missing and excluded. Float/vector fields and invalid UTF-8 are rejected. Commas separate requested values; escaping a comma inside one requested value is not supported.
+
+CS metadata selection verifies the recorded source SHA-256 and requires valid source-row indices. It does not rematch particles or accept an external annotation file. CS splitting is limited to 100 distinct non-missing values; use explicit value selection for higher-cardinality fields. Child-name collisions or existing outputs are checked before writing; `--overwrite` does not resolve ambiguous names.
+
+**Inspect and export a saved subset:** reuse the `region_01` selection from the first workflow. `--all` shows all selected candidates subject to the plotting point limit.
+
+```bash
+cryorole visualize --run-dir my_run --selection-id region_01 --all --visual-id review
+```
+
+Open `my_run/visualizations/selections/region_01/parent_raw/review/`. After inspection, export using the command in the next section. No extra selected-landscape file is required for this workflow.
+
+Optionally, add `--write-selected-landscape` when creating a selection to save a derived landscape as well. It inherits parent SLD unless you explicitly also request `--recompute-sld`, which recomputes subset SLD and preserves parent SLD fields separately. View that artifact with `visualize --selection-id NAME --use-selected-landscape`. Recomputing SLD is not required for export.
+
+For complete option details and mode-specific errors, run `cryorole select --help` or see the [CLI reference](docs/cli_reference.md#selection-modes-and-names).
+
+### Export: use the subset downstream
+
+For the first workflow's saved selection:
+
+```bash
+cryorole export --run-dir my_run --selection-id region_01
+```
+
+This is the same export as in the first workflow; run it once. If you deliberately regenerate an existing export, add `--overwrite`. To export another subset, substitute its selection ID.
+
+The defaults are `--domain both` and `--format auto`. Choose `--domain ref` or `mov` for a single domain. Output is under `my_run/exports/SELECTION_ID/`, with a report and per-domain `.cs` or `.star` files.
+
+Export subsets the original metadata using saved source-row provenance; it neither reselects particles nor writes canonical/display coordinates into source poses. Source content is verified against the run. If files moved, use the explicit relocation options described in the [FAQ](docs/faq.md).
+
+## Find your results
+
+Start with the report and images. Other directories appear as you run the corresponding commands:
 
 ```text
-cryorole_outputs/
-  run_manifest.json
-  run_summary.json
-  run_report.md
-  data/
-    raw_landscape.npz
-    raw_landscape.csv
-    match_table.csv
-  reports/
-  visualizations/
-  canonical/
-  selections/
-  exports/
+my_run/
+  run_report.md                    Start here: results, diagnostics, next steps
+  data/raw_landscape.csv           Per-particle table for inspection
+  data/raw_landscape.npz           Numeric landscape used by cryoROLE
+  visualizations/quicklook/        Automatic run previews
+  visualizations/raw/overview/     Example named visualization
+  canonical/default/              Optional canonical landscape and frame
+  selections/region_01/            Saved subset and selection summary
+  exports/region_01/               Export report and source metadata subsets
 ```
 
-If `cryorole run --output-dir my_run` is used, the same layout is written under `my_run/` instead.
+`run_manifest.json`, `run_summary.json`, and `reports/` record provenance and diagnostics. Keep the run bundle together for downstream commands. See [Output files](docs/output_files.md) for the complete layout.
 
-Important user-facing artifacts include:
+## Common questions
 
-| Artifact | Meaning |
-|---|---|
-| `run_manifest.json` | Top-level provenance and artifact index for the run bundle. |
-| `run_summary.json` | Human-readable summary of inputs, matching, policies, and outputs. |
-| `run_report.md` | Concise guide to files, quick-look figures, warnings, and next commands. |
-| `data/raw_landscape.npz` | Machine-readable source of truth for the raw RO landscape. |
-| `data/raw_landscape.csv` | Flat table for inspection, plotting, and external tools. |
-| `data/match_table.csv` | Matched-particle provenance linking reference and moving-domain source rows. |
-| `canonical/<id>/canonical_landscape.csv` | Canonical landscape table with raw and canonical coordinates. |
-| `visualizations/` | Display-only figures and display tables. |
-| `selections/<selection_id>/` | Auditable particle-selection artifact. |
-| `exports/<selection_id>/` | Selected source metadata for downstream reconstruction. |
+### Why are fewer particles shown than reported by run?
 
-JSON files are used for reports, summaries, manifests, and provenance. Full object-record landscape JSON is not the production-scale persistence format.
+Default `visualize` filters to `sld_display >= 1`; 2D/3D also use display point limits. `--all` removes the SLD threshold, while `--max-points` controls the plotting cap. Read `visualization_report.json` for candidate, filtered, and plotted counts. None of these settings removes particles from the parent landscape.
 
-## Key concepts
+### Why did a display filter not create an exportable subset?
 
-| Concept | Meaning |
-|---|---|
-| Relative orientation (RO) | Per-particle inter-domain rotation, defined as `RO = R_ref^-1 R_mov`. |
-| Reference domain | Domain whose frame is used as the reference for the relative orientation. |
-| Moving domain | Domain expressed relative to the reference domain. |
-| Raw landscape | Direct RO result from matched input particles. |
-| Canonical landscape | Optional motion-aligned representation derived from the raw landscape. |
-| RV space | Rotation-vector coordinate space used for statistics, density estimation, canonicalization, and geodesic reasoning. |
-| Euler space | User-facing display coordinate. cryoROLE 2.0 uses extrinsic fixed-axis ZYX for public RO/RV-derived Euler output and records that convention in reports/manifests. |
-| `sld_raw` | Scientific SLD (kNN-scaled local density) value used by default policies. |
-| `sld_display` | Display-only SLD/color value. |
-| Visualization filter | Display-only row/filter choice; does not create a selection. |
-| Selection | Explicit particle subset that can be exported. |
-| Export | Source metadata subset; source poses are not rewritten with display or canonical coordinates. |
+Display filters only control plots. Use `select`, or Confirm in `explore`, to save a named subset before export.
 
-## Documentation
+### Which coordinates and SLD should I use?
 
-- [Installation](docs/installation.md)
-- [Quick start](docs/quick_start.md)
-- [Workflow UX tutorial](docs/workflow_ux.md)
-- [CLI reference](docs/cli_reference.md)
-- [FAQ and troubleshooting](docs/faq.md)
-- [RELION workflow](docs/relion_workflow.md)
-- [CryoSPARC workflow](docs/cryosparc_workflow.md)
-- [Output files](docs/output_files.md)
-- [Migration from cryoROLE 0.x](docs/migration_from_0x.md)
-- [Architecture contract](docs/architecture.md)
-- [Animation export](docs/animation_export.md)
-- [Roadmap](docs/roadmap.md)
+Raw coordinates are the direct RO result; canonical coordinates express that result in an optional motion-aligned frame. Choose the same space when reading a center from a plot and selecting around it. Public Euler coordinates use extrinsic fixed-axis ZYX in degrees; rotation-vector coordinates are in radians.
 
-## Notes for cryoROLE 0.x users
+SLD color bars use one readable label, while artifacts retain `sld_raw` (scientific density) and `sld_display` (display field). Threshold selection uses `sld_raw`; color scaling does not change it. SLD is a sampling-density measure, not a direct particle-quality score.
 
-The old multi-script workflow maps to the 2.0 CLI as follows:
+### Why is selection-id required?
 
-| cryoROLE 0.x command | cryoROLE 2.0 command |
-|---|---|
-| `orientation_analysis` | `cryorole run` |
-| `landscape_projection` | `cryorole visualize` |
-| `point_select` | `cryorole select` |
-| `particle_backtrack` | `cryorole export` |
+You may save many regions from one run. An explicit name makes them distinguishable and avoids silently replacing a default subset. Choose a new name for a new region; use `--overwrite` only to intentionally replace an existing one.
 
-See [Migration from cryoROLE 0.x](docs/migration_from_0x.md) for details.
+### Do RO coordinate coincidences mean duplicate particles?
+
+No. The diagnostic counts rows sharing quantized RO rotation-vector coordinates (default grid step `1e-8 rad`). Dispersed pairs or triples are informational. Under the initial heuristic policy, groups of at least 10 contribute to the concentration count; a warning appears if their combined size reaches 100 rows **or** 1% of all landscape rows.
+
+These thresholds are diagnostic heuristics, not scientific cutoffs. Coordinate coincidence alone establishes neither duplicate particle identity nor duplicate images. Existing identity/matching diagnostics handle their own evidence and failures. The RO diagnostic does not remove particles or change SLD.
+
+### Why does an older 3D HTML open blank?
+
+Older generated files can contain a JavaScript newline-escaping error. Regenerate the viewer with the updated code and a new `--visual-id`; existing HTML files are not repaired automatically. Generated-script and simulated interaction tests pass, but actual Chrome rendering and interaction acceptance for this fix remains pending. See [FAQ](docs/faq.md) for troubleshooting.
+
+## Advanced workflows and documentation
+
+| Need | Where to go |
+| --- | --- |
+| CryoSPARC input and metadata export | [CryoSPARC workflow](docs/cryosparc_workflow.md) |
+| RELION input, matching, and optional `align` preparation | [RELION workflow](docs/relion_workflow.md) |
+| Resume work, inspect status, or get next-step guidance | [Workflow tutorial: `status`, `next`, `guide`, `explore`](docs/workflow_ux.md) |
+| Look up command arguments | [CLI reference](docs/cli_reference.md) and `cryorole COMMAND --help` |
+| Inspect landscape CSVs in ChimeraX | [Standalone viewer](cryorole_chimerax_viewer.py): its opening documentation gives setup and commands |
+| Render landscape/rigid-body movies or canonical camera views | [Animation and canonical-views guide](docs/animation_export.md); structure execution requires ChimeraX, MP4 encoding additionally requires FFmpeg/FFprobe |
+| Apply a diagnostic rotation to a derived landscape | [Rotation script](scripts/rotate_landscape.py), with usage through `--help` |
+| Resolve setup or workflow errors | [Installation](docs/installation.md) · [FAQ](docs/faq.md) |
+| Inspect files or migrate an older workflow | [Output files](docs/output_files.md) · [0.x migration](docs/migration_from_0x.md) |
+
+Animation represents an interpolated rigid-body rendering, not a new reconstruction at each trajectory position. Its frame, baseline, and pivot prerequisites are covered in the linked guide.
 
 ## Citation
 

@@ -205,6 +205,9 @@ hashes require `--allow-unverified-source`, and that decision is recorded.
 - CSV: user-facing flat tables.
 - JSON: reports, summaries, manifests, policies, and provenance.
 
+Full landscape JSON is debug-only and opt-in. `landscape.json` is not the
+default production landscape; use `data/raw_landscape.npz` for cryoROLE commands.
+
 ## Derived Coordinate Conventions
 
 Rotation matrices are the internal source of truth. Rotation vectors,

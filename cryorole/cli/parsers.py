@@ -10,10 +10,28 @@ from cryorole.core.euler_conventions import EULER_CONVENTIONS
 
 _HIDDEN_HELP = argparse.SUPPRESS
 
+class _CommandParser(argparse.ArgumentParser):
+    def error(self, message):
+        if self.prog.endswith(" select") and "required" in message and "--selection-id" in message:
+            message += (
+                "\nChoose a name for this selection: add --selection-id region_01."
+                "\nEach name identifies a saved subset under RUN/selections/NAME/."
+            )
+        super().error(message)
+
+
+class _StoreExplicit(argparse.Action):
+    """Retain user intent for options whose defaults apply to only one mode."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.explicit_options = (*getattr(namespace, "explicit_options", ()), self.dest)
+
+
 def build_command_parser(handlers: Mapping[str, Callable[..., int]]) -> argparse.ArgumentParser:
     """Build the cryoROLE CLI parser without embedding scientific logic."""
 
-    parser = argparse.ArgumentParser(prog="cryorole")
+    parser = _CommandParser(prog="cryorole")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     _add_align_parser(subparsers, handlers)
@@ -338,7 +356,10 @@ def _add_visualize_parser(subparsers, handlers) -> None:
     parser.add_argument("--vmin", type=float, help="Display-only color minimum.")
     parser.add_argument("--vmax", type=float, help="Display-only color maximum.")
     parser.add_argument("--point-size", type=float, help="Display-only scatter point size.")
-    parser.add_argument("--alpha", type=float, help="Display-only point opacity in [0, 1].")
+    opacity = parser.add_mutually_exclusive_group()
+    opacity.add_argument("--opacity", dest="alpha", type=float,
+                         help="Display-only point opacity: 0 transparent, 1 opaque. Uses the style default when omitted.")
+    opacity.add_argument("--alpha", dest="alpha", type=float, help=_HIDDEN_HELP)
     parser.add_argument(
         "--axis-limit",
         dest="axis_limit",
@@ -635,85 +656,76 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
 
 def _add_select_parser(subparsers, handlers) -> None:
     parser = subparsers.add_parser(
-        "select",
-        help="Create a Selection from an existing landscape after inspection.",
+        "select", help="Create a named scientific Selection from a saved landscape.",
+        description=("Save a scientific subset for inspection and export. Choose a selection name and a mode. "
+                     "Selection evaluates the full parent landscape, independently of display sampling or filters."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples (replace RUN with your run directory):
+  cryorole select --run-dir RUN --selection-id region_01 --mode radius --center 0 0 0 --radius 15
+  cryorole select --run-dir RUN --selection-id high_sld --mode threshold --sld-min 2
+  cryorole select --run-dir RUN --selection-id alpha_window --mode range --range-bound alpha:-20:20
+  cryorole select --run-dir RUN --selection-id sample_10pct --mode random --fraction 0.1 --seed 7
+  cryorole select --run-dir RUN --selection-id cs_classes --mode metadata --metadata-domain ref --metadata-column alignments3D/class --metadata-value 0,1
+  cryorole select --run-dir RUN --selection-id ref_classes --mode metadata --metadata-domain ref --metadata-column rlnClassNumber --metadata-value 1,3
+  cryorole select --run-dir RUN --selection-id ref_classes --mode metadata --metadata-domain ref --metadata-column rlnClassNumber --split-by-value""",
     )
-    parser.add_argument("--run-dir", required=True, help="Existing cryoROLE run bundle directory.")
-    parser.add_argument("--selection-id", required=True, help="Selection output id under RUN/selections/.")
-    parser.add_argument(
-        "--space",
-        choices=("raw", "canonical"),
-        default="raw",
-        help="Parent landscape space. Default: raw.",
-    )
-    parser.add_argument(
-        "--canonical-id",
-        default="default",
-        help="Canonical id when --space canonical. Default: default.",
-    )
-    parser.add_argument(
-        "--mode",
-        dest="selection_mode",
-        choices=("radius", "threshold", "range", "random", "metadata"),
-        default="radius",
-        help="Selection mode. Default: radius.",
-    )
-    parser.add_argument("--sld-min", type=float, help="Lower sld_raw bound for threshold mode.")
-    parser.add_argument("--sld-max", type=float, help="Upper sld_raw bound for threshold mode.")
-    parser.add_argument("--fraction", type=float, help="Random selection fraction; 0 < F <= 1.")
-    parser.add_argument("--seed", type=int, help="Optional random seed.")
-    parser.add_argument("--metadata-domain", choices=("ref", "mov"), help="Source metadata domain.")
-    parser.add_argument("--metadata-column", help="Source metadata column for metadata mode.")
-    parser.add_argument("--metadata-value", help="Metadata value(s); comma-separated values are allowed.")
-    parser.add_argument("--split-by-value", action="store_true", help="Write one child selection per metadata value.")
-    parser.add_argument(
-        "--center",
-        "-c",
-        nargs=3,
-        type=float,
-        metavar=("A", "B", "C"),
-        help="Radius center coordinates; default representation is Euler degrees.",
-    )
-    parser.add_argument(
-        "--center-representation",
-        choices=("euler", "rotvec"),
-        default="euler",
-        help="Representation of --center. Default: euler.",
-    )
-    parser.add_argument("--radius", "-r", type=float, help="Radius in degrees for radius mode.")
-    parser.add_argument("--radius-rad", type=float, help="Radius in radians for rotation selection.")
-    parser.add_argument(
-        "--metric",
-        choices=("so3", "rotvec"),
-        default="so3",
-        help="Radius metric. Default: so3.",
-    )
-    parser.add_argument(
-        "--range-bound",
-        action="append",
-        default=None,
-        type=_parse_range_bound,
-        metavar="AXIS:LOWER:UPPER",
-        help="Coordinate range bound; use blank lower/upper for unconstrained sides.",
-    )
-    parser.add_argument(
-        "--write-selected-landscape",
-        action="store_true",
-        help=(
-            "Also write RUN/selections/ID/selected_landscape/ for "
-            "visualize --selection-id ID --use-selected-landscape."
-        ),
-    )
-    parser.add_argument(
-        "--recompute-sld",
-        action="store_true",
-        help="Recompute SLD only in the selected-derived landscape; requires --write-selected-landscape.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Replace existing artifacts for this selection id only; raw/canonical landscapes are unchanged.",
-    )
+    common = parser.add_argument_group("Common inputs and naming")
+    common.add_argument("--run-dir", required=True, help="Existing cryoROLE run bundle directory.")
+    common.add_argument("--selection-id", required=True, metavar="NAME",
+                        help="Required user-chosen name, e.g. region_01. Saved under RUN/selections/NAME/. No default name.")
+    common.add_argument("--space", choices=("raw", "canonical"), default="raw",
+                        help="Parent coordinate space. Default: raw.")
+    common.add_argument("--canonical-id", default="default", action=_StoreExplicit,
+                        help="Canonical landscape ID; only with --space canonical. Default: default.")
+    common.add_argument("--mode", dest="selection_mode",
+                        choices=("radius", "threshold", "range", "random", "metadata"), default="radius",
+                        help="radius: nearby orientations; threshold: SLD bounds; range: coordinate bounds; "
+                             "random: random subset; metadata: source values. Default: radius.")
+
+    radius = parser.add_argument_group("radius mode", "Select near a center using SO(3) geodesic distance by default. "
+                                       "Requires --center and exactly one radius option. Euler conventions come from the parent landscape.")
+    radius.add_argument("--center", "-c", nargs=3, type=float, metavar=("A", "B", "C"),
+                        help="Center in the chosen --space: Euler degrees or rotvec radians.")
+    radius.add_argument("--center-representation", choices=("euler", "rotvec"), default="euler", action=_StoreExplicit,
+                        help="Representation of --center. Default: euler.")
+    radius.add_argument("--radius", "-r", type=float, help="Radius in degrees; exclusive with --radius-rad.")
+    radius.add_argument("--radius-rad", type=float, help="Radius in radians; independent of center units.")
+    radius.add_argument("--metric", choices=("so3", "rotvec"), default="so3", action=_StoreExplicit,
+                        help="so3: rotation geodesic; rotvec: Euclidean rotation-vector distance. Default: so3. Neither uses Euler Euclidean distance.")
+
+    threshold = parser.add_argument_group("threshold mode", "Select by sld_raw, including both boundaries. "
+                                          "Requires at least one bound; display colors and filters do not control selection.")
+    threshold.add_argument("--sld-min", type=float, help="Inclusive lower SLD bound (>= 0).")
+    threshold.add_argument("--sld-max", type=float, help="Inclusive upper SLD bound (>= lower bound).")
+
+    ranges = parser.add_argument_group("range mode", "Select the intersection of coordinate-axis bounds. "
+                                       "Use alpha/beta/gamma in degrees OR x/y/z in radians; do not mix representations. "
+                                       "Euler lower > upper wraps across the periodic seam; rotvec bounds must be ordered.")
+    ranges.add_argument("--range-bound", action="append", default=None, type=_parse_range_bound,
+                        metavar="AXIS:LOWER:UPPER", help="Required; repeat for multiple axes. Bounds are inclusive. "
+                        "Blank sides are open, e.g. alpha::20. At least one side must be constrained. Repeat of the same axis uses the last bound.")
+
+    random = parser.add_argument_group("random mode", "Sample without replacement from all parent rows; "
+                                       "ceil(fraction * row count) rows are selected. This creates a Selection, unlike visualization sampling.")
+    random.add_argument("--fraction", type=float, help="Required fraction, 0 < F <= 1.")
+    random.add_argument("--seed", type=int, help="Non-negative random seed for reproducibility. Omitted: fresh randomness; recorded seed is null.")
+
+    metadata = parser.add_argument_group("metadata mode", "Use run-time CryoSPARC CS or RELION STAR metadata and recorded source-row provenance. "
+                                         "CS supports scalar integers, booleans, and UTF-8 text; empty strings are excluded. "
+                                         "Requires domain, column, and either values or split. No rematching or external annotation file.")
+    metadata.add_argument("--metadata-domain", choices=("ref", "mov"), help="Required source domain; never inferred.")
+    metadata.add_argument("--metadata-column", help="Required source particle column, e.g. alignments3D/class (CS) or rlnClassNumber (STAR).")
+    metadata.add_argument("--metadata-value", help="Values to include (union), e.g. 0,1. CS uses typed exact matching; booleans accept true/false/1/0. Exclusive with --split-by-value.")
+    metadata.add_argument("--split-by-value", action="store_true",
+                          help="One standard Selection per matched value: NAME_VALUE, with filename-safe components. CS limit: 100 groups; collisions fail before writing. Exclusive with --metadata-value.")
+
+    output = parser.add_argument_group("Output controls")
+    output.add_argument("--write-selected-landscape", action="store_true",
+                        help="Also write selected_landscape/ for visualize --selection-id NAME --use-selected-landscape.")
+    output.add_argument("--recompute-sld", action="store_true",
+                        help="Requires --write-selected-landscape. Recompute subset SLD and preserve parent SLD fields separately.")
+    output.add_argument("--overwrite", action="store_true",
+                        help="Explicitly replace this selection ID only (generated child IDs in split mode); parent landscapes and unrelated selections remain unchanged.")
     parser.set_defaults(handler=handlers["select"])
 
 

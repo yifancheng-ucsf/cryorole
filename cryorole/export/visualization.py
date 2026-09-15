@@ -1007,13 +1007,13 @@ def _write_2d_figure(
             figure.colorbar(
                 scatter,
                 ax=axes.ravel().tolist(),
-                label=color_field,
+                label=_colorbar_label(color_field),
                 orientation="horizontal",
                 fraction=0.08,
                 pad=0.12,
             )
         else:
-            figure.colorbar(scatter, ax=axes.ravel().tolist(), label=color_field)
+            figure.colorbar(scatter, ax=axes.ravel().tolist(), label=_colorbar_label(color_field))
     generated = {}
     for fmt in formats:
         path = output_dir / _triptych_figure_name(
@@ -1099,13 +1099,13 @@ def _write_3d_figure(
         figure.colorbar(
             scatter,
             ax=axis,
-            label=color_field,
+            label=_colorbar_label(color_field),
             orientation="horizontal",
             fraction=0.08,
             pad=0.12,
         )
     else:
-        figure.colorbar(scatter, ax=axis, label=color_field)
+        figure.colorbar(scatter, ax=axis, label=_colorbar_label(color_field))
     generated = {}
     for fmt in formats:
         filename = (
@@ -1170,13 +1170,13 @@ def _write_individual_projection_figures(
             figure.colorbar(
                 scatter,
                 ax=axis,
-                label=color_field,
+                label=_colorbar_label(color_field),
                 orientation="horizontal",
                 fraction=0.08,
                 pad=0.12,
             )
         else:
-            figure.colorbar(scatter, ax=axis, label=color_field)
+            figure.colorbar(scatter, ax=axis, label=_colorbar_label(color_field))
         for fmt in formats:
             path = output_dir / _individual_projection_name(
                 representation=representation,
@@ -1384,13 +1384,13 @@ def _write_axis_direction_map(
         figure.colorbar(
             scatter,
             ax=axis,
-            label=color_field,
+            label=_colorbar_label(color_field),
             orientation="horizontal",
             fraction=0.08,
             pad=0.12,
         )
     else:
-        figure.colorbar(scatter, ax=axis, label=color_field)
+        figure.colorbar(scatter, ax=axis, label=_colorbar_label(color_field))
     generated = {}
     for fmt in formats:
         path = output_dir / f"{output_prefix}{coordinate_source}_axis_direction_azimuth_elevation.{fmt}"
@@ -1432,3 +1432,7 @@ def _stack_coordinates(column, column_name: str) -> np.ndarray:
     if coordinates.ndim != 2 or coordinates.shape[1] != 3:
         raise ValueError(f"{column_name} must contain length-3 coordinates")
     return coordinates
+
+
+def _colorbar_label(color_field: str) -> str:
+    return "SLD" if color_field in {"sld_raw", "sld_display", "sld_unfloored"} else color_field

@@ -24,6 +24,22 @@ class CryoSparcData:
     report: ImportReport
 
 
+def read_cryosparc_cs_column(path: str | Path, column: str) -> np.ndarray:
+    """Map one scalar categorical field without materializing unrelated fields."""
+    array = np.load(path, mmap_mode="r", allow_pickle=False)
+    if not isinstance(array, np.ndarray) or array.ndim != 1 or array.dtype.names is None:
+        raise ValueError("CryoSPARC metadata must be a one-dimensional structured array")
+    if column not in array.dtype.names:
+        raise ValueError(f"Source metadata missing column: {column}")
+    values = array[column]
+    if values.ndim != 1 or values.dtype.kind not in "iubSU":
+        raise ValueError(
+            f"CS metadata column {column!r} must be scalar integer, boolean, or text; "
+            f"got {values.dtype}, shape {values.shape}. Float and vector selection are not supported."
+        )
+    return values
+
+
 def read_cryosparc_cs(path: str | Path) -> CryoSparcData:
     """Parse a CryoSPARC .cs file into a raw particle table."""
 

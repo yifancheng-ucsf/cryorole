@@ -129,6 +129,15 @@ display/filter/downsample provenance. The equivalent non-browser command is:
 cryorole select --run-dir my_run --selection-id state_1 --space raw -c A B C -r DEG
 ```
 
+For CLI selection, `--selection-id` is your chosen name, not an automatically
+assigned identifier. Keep separate regions under separate names. An existing
+name requires explicit `--overwrite`; ordinary CLI commands do not prompt for
+missing names. Use `cryorole select --help` for mode-grouped parameters and
+complete examples (radius, threshold, range, random, and metadata). See the
+selection table in `docs/cli_reference.md` for units and dependencies. Selection
+success guidance includes the saved name and an export command on stderr;
+stdout remains the output directory.
+
 ## 7. Export without reselecting
 
 ```bash

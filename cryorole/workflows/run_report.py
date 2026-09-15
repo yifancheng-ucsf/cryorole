@@ -85,8 +85,12 @@ def _render_run_report(request: RunReportRequest) -> str:
             f">100={density.n_high_sld_points}/{density.n_points}, "
             f"distance-floored={density.n_floored_points}/{density.n_points}."
         )
+        diagnostic = density.ro_coordinate_diagnostics
+        if diagnostic and diagnostic["severity"] == "info":
+            lines.extend(["", str(diagnostic["message"])])
         warnings.extend(density.warnings)
     if warnings:
+        lines.append("")
         lines.extend(f"- {warning}" for warning in warnings)
     else:
         lines.append("No matching or SLD warnings were reported.")
