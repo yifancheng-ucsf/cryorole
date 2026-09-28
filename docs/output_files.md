@@ -285,8 +285,10 @@ policies.
 `sld_unfloored`
 
 SLD without the distance floor. A particle whose k nearest neighbours all have
-exactly its RO (for example duplicated particles, symmetry expansion, or a rigid
-subpopulation larger than k) has zero local distance and `+inf` here; the count
+its RO (for example duplicated particles, symmetry expansion, or a rigid
+subpopulation larger than k) has zero local distance and `+inf` here. "Zero"
+means a mean kNN distance of at most 1e-12 rad, so that floating-point rounding,
+which differs between platforms, does not change the result. The count
 is `n_inf_sld_unfloored` in `reports/density_report.json` and is explained in
 `run_report.md`. `sld_raw` stays finite because of the distance floor. NaN is
 never a valid SLD value.

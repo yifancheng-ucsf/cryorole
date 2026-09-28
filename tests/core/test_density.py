@@ -641,6 +641,56 @@ def test_array_native_density_accepts_inf_sld_for_more_than_k_identical_ros(
     assert report.n_inf_sld_raw == (60 if distance_floor_fraction == 0.0 else 0)
 
 
+@pytest.mark.parametrize("sld_metric", ["rotvec_euclidean", "so3_geodesic"])
+@pytest.mark.parametrize("distance_floor_fraction", [1e-4, 0.0])
+def test_identical_ros_with_rounding_noise_still_give_inf_unfloored_sld(
+    sld_metric, distance_floor_fraction
+) -> None:
+    """Identical poses give ROs that differ by rounding only (~1e-17 rad on macOS wheels).
+
+    They must be classified exactly like bitwise-identical ROs, on every platform.
+    """
+
+    from cryorole.core.density import compute_landscape_density_arrays
+
+    rng = np.random.default_rng(0)
+    near_identity = rng.normal(0.0, 2e-17, (30, 3))
+    base = Rotation.from_rotvec([0.1, 0.2, 0.3])
+    near_base = (base * Rotation.from_rotvec(rng.normal(0.0, 1e-16, (30, 3)))).as_rotvec()
+    coords = np.vstack([near_identity, near_base, rng.normal(0.0, 0.3, (100, 3))])
+    assert np.unique(coords[:30], axis=0).shape[0] == 30  # really not bitwise identical
+    n = len(coords)
+    policy = DensityPolicy(
+        k_neighbors=20, sld_metric=sld_metric, distance_floor_fraction=distance_floor_fraction
+    )
+
+    arrays, report = compute_landscape_density_arrays(
+        np.arange(n).astype(str), coords, np.arange(n), np.arange(n), policy=policy
+    )
+
+    assert report.n_inf_sld_unfloored == 60
+    assert np.isposinf(arrays.sld_unfloored[:60]).all()
+    assert np.isfinite(arrays.sld_unfloored[60:]).all()
+    assert report.n_inf_sld_raw == (60 if distance_floor_fraction == 0.0 else 0)
+
+
+@pytest.mark.parametrize("sld_metric", ["rotvec_euclidean", "so3_geodesic"])
+def test_tiny_but_real_distances_are_resolved_and_not_treated_as_coincident(sld_metric) -> None:
+    """The coincidence tolerance (1e-12 rad) must not swallow small physical distances."""
+
+    spacing = 1e-9
+    coords = np.array([[0.2, 0.0, 0.0], [0.2 + spacing, 0.0, 0.0], [0.5, 0.1, 0.0], [-0.3, 0.2, 0.1]])
+
+    result = compute_sld_values(
+        coords, k_neighbors=1, distance_floor_fraction=0.0, sld_metric=sld_metric, query_batch_size=2
+    )
+
+    # arccos(|q.p|) could not resolve this (it returns 0 or ~2e-8 rad); the chord form does.
+    assert result["sld_local_k_mean"][0] == pytest.approx(spacing, rel=1e-6)
+    assert result["sld_local_k_mean"][1] == pytest.approx(spacing, rel=1e-6)
+    assert np.isfinite(result["sld_unfloored"]).all()
+
+
 def test_landscape_arrays_accept_posinf_sld_but_reject_nan_and_neginf() -> None:
     from cryorole.models.landscape_arrays import LandscapeArrays
 

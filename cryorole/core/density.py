@@ -23,6 +23,14 @@ SLD_METRICS = ("rotvec_euclidean", "so3_geodesic")
 DEFAULT_SLD_METRIC = "rotvec_euclidean"
 DEFAULT_DENSITY_QUERY_BATCH_SIZE = 100_000
 _MAX_KNN_QUERY_ELEMENTS = 2_000_000
+# A kNN mean distance at or below this many radians is treated as zero: the
+# neighbours coincide with the query up to floating-point rounding. Identical
+# poses give relative orientations that are exactly the identity only when every
+# platform rounds R_ref^T R_mov identically; they do not (e.g. macOS wheels leave
+# ~1e-17 rad), so an exact ``== 0.0`` test would make ``sld_unfloored`` +inf on one
+# platform and ~1e16 on another. 1e-12 rad (~6e-11 degrees) is far below any
+# physical angular precision and far above rounding noise.
+COINCIDENT_DISTANCE_TOLERANCE_RAD = 1e-12
 
 
 def _require_ro_result(ro_result: ROResult) -> None:
@@ -154,8 +162,8 @@ def compute_sld_values(
     with np.errstate(divide="ignore", invalid="ignore"):
         sld_unfloored = global_local_k_mean / local_k_mean
         sld_raw = global_local_k_mean / effective_local_k_mean
-    sld_unfloored = np.where(local_k_mean == 0.0, np.inf, sld_unfloored)
-    sld_raw = np.where(effective_local_k_mean == 0.0, np.inf, sld_raw)
+    sld_unfloored = np.where(local_k_mean <= COINCIDENT_DISTANCE_TOLERANCE_RAD, np.inf, sld_unfloored)
+    sld_raw = np.where(effective_local_k_mean <= COINCIDENT_DISTANCE_TOLERANCE_RAD, np.inf, sld_raw)
 
     return {
         "sld_local_k_mean": local_k_mean,
@@ -266,12 +274,15 @@ def _so3_geodesic_local_k_mean(
             )
 
         neighbor_quaternions = quaternions[selected_neighbors]
-        dots = np.einsum(
-            "bi,bki->bk",
-            quaternions[query_particle_indices],
-            neighbor_quaternions,
+        query_quaternions = quaternions[query_particle_indices][:, None, :]
+        # Chord form of the geodesic angle, theta = 4 * arcsin(|q - s p| / 2) with the
+        # sign s chosen for the shorter chord. Unlike 2 * arccos(|q . p|), it keeps full
+        # precision near zero (arccos cannot resolve angles below ~2e-8 rad).
+        chord = np.minimum(
+            np.linalg.norm(query_quaternions - neighbor_quaternions, axis=2),
+            np.linalg.norm(query_quaternions + neighbor_quaternions, axis=2),
         )
-        geodesic_distances = 2.0 * np.arccos(np.clip(np.abs(dots), 0.0, 1.0))
+        geodesic_distances = 4.0 * np.arcsin(np.clip(0.5 * chord, 0.0, 1.0))
         local_k_mean[start:stop] = np.mean(geodesic_distances, axis=1)
 
     return local_k_mean
