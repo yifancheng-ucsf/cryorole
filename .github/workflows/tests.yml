@@ -1,0 +1,64 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff
+      - run: ruff check cryorole tests benchmarks scripts
+
+  test:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest supported Python (requires-python = ">=3.9") and a current one on Linux,
+          # plus macOS (Apple silicon), the main desktop platform.
+          - os: ubuntu-latest
+            python-version: "3.9"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.12"
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install cryoROLE with test extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test]"
+      - name: Check the installed command
+        run: |
+          cryorole --version
+          cryorole run --help > /dev/null
+      # Data-derived fixtures are not published, so the tests that need them
+      # report "skipped" here (see tests/conftest.py); ChimeraX/FFmpeg
+      # integration tests also skip unless those programs are configured.
+      - name: Run tests
+        run: python -m pytest tests -q -rs

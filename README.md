@@ -1,5 +1,7 @@
 # cryoROLE 2.0
 
+[![tests](https://github.com/yifancheng-ucsf/cryorole/actions/workflows/tests.yml/badge.svg)](https://github.com/yifancheng-ucsf/cryorole/actions/workflows/tests.yml)
+
 **Understand inter-domain rotation, explore orientation landscapes, and export particle subsets for reconstruction.**
 
 cryoROLE (cryo-EM Relative Orientation LandscapE) compares the per-particle orientations of two separately refined, approximately rigid domains. Start with CryoSPARC `.cs` or RELION `.star` metadata; obtain a relative-orientation landscape, plots, and selected metadata for downstream refinement or reconstruction.
