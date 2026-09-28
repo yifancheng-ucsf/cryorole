@@ -113,16 +113,18 @@ def test_align_help_shows_compact_public_params(capsys) -> None:
         assert option in help_text
     assert "run" in help_text
     assert "--row-aligned" in help_text
-    assert "--output" not in help_text
+    for option in ("--output-dir", "--key-pair", "--coordinate-match", "--recenter-shift", "--via-extraction",
+                   "--fix-subtract-coordinates"):
+        assert option in help_text
     assert "occurrence" not in help_text
     assert " error" not in help_text
 
 
 def test_align_requires_ref_and_mov() -> None:
-    parser = build_parser()
+    args = build_parser().parse_args(["align"])
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["align"])
+    with pytest.raises(ValueError, match="needs --ref and --mov"):
+        align_command(args)
 
 
 def test_non_star_input_fails_clearly(tmp_path) -> None:
@@ -146,7 +148,7 @@ def test_auto_uses_tomo_particle_name_and_reorders_mov(tmp_path, monkeypatch) ->
 
     report = align_star_files(ref=ref, mov=mov)
 
-    output_dir = tmp_path / "alignments" / "default"
+    output_dir = tmp_path / "cryorole_alignments" / "default"
     assert report["key_columns"] == ["_rlnTomoParticleName"]
     assert (output_dir / "aligned_ref.star").exists()
     assert (output_dir / "aligned_mov.star").exists()
@@ -221,7 +223,7 @@ def test_image_name_zero_overlap_fails_without_aligned_outputs(tmp_path, monkeyp
     with pytest.raises(ValueError, match="zero overlap"):
         align_star_files(ref=ref, mov=mov)
 
-    assert not (tmp_path / "alignments" / "default" / "aligned_ref.star").exists()
+    assert not (tmp_path / "cryorole_alignments" / "default" / "aligned_ref.star").exists()
 
 
 def test_low_overlap_warns_but_writes_outputs(tmp_path) -> None:
@@ -237,7 +239,7 @@ def test_low_overlap_warns_but_writes_outputs(tmp_path) -> None:
     assert report["matched_count"] == 1
     assert report["low_overlap_warning"] is True
     assert any("Low overlap" in warning for warning in report["warnings"])
-    assert (Path("alignments") / "default" / "aligned_ref.star").exists()
+    assert (Path("cryorole_alignments") / "default" / "aligned_ref.star").exists()
 
 
 def test_explicit_coordinate_key_with_float_tolerance(tmp_path) -> None:
@@ -376,7 +378,7 @@ def test_duplicate_policy_exclude_is_default(tmp_path) -> None:
 
     report = align_star_files(ref=ref, mov=mov)
 
-    output_dir = Path("alignments") / "default"
+    output_dir = Path("cryorole_alignments") / "default"
     assert report["duplicate_policy"] == "exclude"
     assert report["matched_count"] == 1
     assert report["duplicate_ref_row_count"] == 2
@@ -425,7 +427,7 @@ def test_output_dir_exists_requires_overwrite(tmp_path, monkeypatch) -> None:
     rows = [{"_rlnImageName": "a"}]
     _write_star(ref, rows, columns=["_rlnImageName"])
     _write_star(mov, rows, columns=["_rlnImageName"])
-    (tmp_path / "alignments" / "default").mkdir(parents=True)
+    (tmp_path / "cryorole_alignments" / "default").mkdir(parents=True)
 
     with pytest.raises(FileExistsError, match="Align output directory already exists"):
         align_star_files(ref=ref, mov=mov)
@@ -448,7 +450,7 @@ def test_align_command_writes_outputs_and_preserves_sources(tmp_path, monkeypatc
 
     assert align_command(args) == 0
 
-    output_dir = tmp_path / "alignments" / "default"
+    output_dir = tmp_path / "cryorole_alignments" / "default"
     report = json.loads((output_dir / "align_report.json").read_text(encoding="utf-8"))
     for key in (
         "artifact_type",

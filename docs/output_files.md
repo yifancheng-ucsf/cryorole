@@ -61,6 +61,23 @@ mistake; the thresholds are heuristics and are recorded in
 | `IDENTICAL_POSES` | strong warning | at least 99% of particles have an RO angle below 1e-6 rad |
 | `NEARLY_IDENTICAL_ORIENTATIONS` | warning | median RO angle below 1° and 99th percentile below 2° |
 
+The summary also reports the fractions below 0.1°, 0.5°, 1° and 5° and the
+histogram mode. The findings are prompts to inspect the inputs, not a
+conclusion that the pairing is wrong: stable domains can have small relative
+rotations.
+
+### Alignment lineage (`--row-aligned` runs)
+
+`run_summary.json` and `run_manifest.json` (`results.alignment_provenance`)
+record the `cryorole align` lineage when an `align_report.json` next to the
+inputs verifies. The record has these fields:
+- `attached`;
+- `lineage`: strategy, original paths and hashes, match table;
+- `original_files`: `verified`, `unavailable` or `mismatch` for each original.
+
+When the report cannot be verified, `attached` is `false` and `reason` says why.
+The field is `null` when no report is found. This never affects the run.
+
 If every particle has the same RO, the local density is undefined and `run`
 stops before writing a landscape, with the input-sanity explanation as the
 error message.

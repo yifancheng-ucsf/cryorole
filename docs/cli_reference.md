@@ -45,6 +45,28 @@ full-data log-SLD distribution. `--no-visualize` skips them; every run still
 writes concise `RUN/run_report.md`. Expanded display controls are owned by
 `cryorole visualize`, not `run`.
 
+## Align
+
+```bash
+cryorole align --ref REF --mov MOV [--key COL ... | --key-pair REF_COL=MOV_COL ...]
+               [--coordinate-match unchanged|recentered-exact --recenter-shift X Y Z [--ref-angpix A]]
+               [--via-extraction INPUT OUTPUT --recenter-shift X Y Z]
+               [--output-dir DIR] [--align-id ID] [--overwrite]
+cryorole align --fix-subtract-coordinates SUBTRACT_JOB [--apply-to STAR]
+               [--subtract-input STAR] [--center X Y Z] [--model-angpix A]
+```
+
+Establishes particle correspondence when default matching fails, and writes
+verbatim aligned STAR files with `match_table.csv` and `align_report.json`. The
+default location is `<directory of --ref>/cryorole_alignments/<align-id>/`. It
+prints the exact `cryorole run … --row-aligned` command to run next.
+`--fix-subtract-coordinates` writes a verified copy of a recentred RELION
+subtraction with corrected coordinates. See `docs/relion_workflow.md`.
+
+When default STAR matching fails, `preflight` adds an `align_diagnosis` block
+and prints a candidate table and a suggested `align` command. These are
+suggestions only.
+
 ## Status and next
 
 ```bash

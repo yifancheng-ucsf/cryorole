@@ -43,6 +43,7 @@ def _render_run_report(request: RunReportRequest) -> str:
         f"- Moving: `{summary.get('input_paths', {}).get('mov')}` ({summary.get('source_types', {}).get('mov')})",
         f"- Policy: `{summary.get('match_key')}`; reordered={summary.get('matched_rows_reordered')}",
         f"- Dropped: ref={summary.get('dropped_ref_only_count')}, mov={summary.get('dropped_mov_only_count')}",
+        *_alignment_lines(summary.get("alignment_provenance")),
         "",
         "## Analysis",
         "",
@@ -144,3 +145,14 @@ def _input_sanity_lines(sanity: Mapping[str, Any] | None) -> list[str]:
         lines.extend(["", "No input-sanity warnings (thresholds are heuristics recorded in `run_summary.json`)."])
     lines.append("")
     return lines
+
+
+def _alignment_lines(provenance: Mapping[str, Any] | None) -> list[str]:
+    if not provenance:
+        return []
+    if not provenance.get("attached"):
+        return [f"- Alignment lineage: not attached ({provenance.get('reason')})"]
+    lineage = provenance.get("lineage") or {}
+    states = provenance.get("original_files") or {}
+    status = ", ".join(f"{k} {v.get('status')}" for k, v in states.items())
+    return [f"- Alignment lineage: `{lineage.get('strategy')}` from `{provenance.get('align_report')}` (originals: {status})"]

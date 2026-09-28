@@ -21,16 +21,42 @@ back to the source table without using row order as an identity key.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+import numpy as np
 import pandas as pd
 
 from cryorole.io.import_report import ImportReport
 
 PARTICLES_BLOCK = "data_particles"
 OPTICS_BLOCK = "data_optics"
+
+_QUOTED_FIELDS = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+
+
+def split_star_fields(stripped: str) -> list[str]:
+    """Split one STAR data row into fields.
+
+    Plain rows split on whitespace. Rows containing quotes keep a quoted value
+    (``"a b"`` or ``'a b'``) as one field, quotes included, so that values are
+    reproduced verbatim. Every cryoROLE STAR reader uses this function.
+    """
+
+    if '"' not in stripped and "'" not in stripped:
+        return stripped.split()
+    return _QUOTED_FIELDS.findall(stripped)
+
+
+def unquote_star_value(value: str) -> str:
+    """Remove one pair of matching surrounding quotes, if present."""
+
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
 
 
 @dataclass(frozen=True)
@@ -142,7 +168,7 @@ def _scan_star(
             if not headers:
                 raise ValueError(f"STAR row before loop headers at line {index + 1}")
             begin_rows(index)
-        fields = stripped.split()
+        fields = split_star_fields(stripped)
         if len(fields) != len(headers):
             raise ValueError(
                 f"STAR row at line {index + 1} has {len(fields)} fields; "
@@ -312,3 +338,181 @@ def locate_particle_loop(lines: Sequence[str]) -> StarLoopLocation:
             "cryoROLE supports RELION 3.1+ STAR files with a data_particles table."
         )
     return particle_loops[0]
+
+
+@dataclass(frozen=True)
+class StarParticleIndex:
+    """Byte-level index of the ``data_particles`` loop of one STAR file.
+
+    Row ``i`` of the particle table is ``bytes[row_start[i]:row_end[i]]`` of the
+    file (including its line terminator). ``prefix_end`` is the byte offset where
+    the first particle row starts (everything before it, including all headers
+    and other blocks, is copied verbatim by subset writers) and ``suffix_start``
+    where the text after the last particle row starts.
+    """
+
+    path: str
+    headers: tuple[str, ...]
+    columns: dict[str, list[str]]
+    row_start: np.ndarray
+    row_end: np.ndarray
+    prefix_end: int
+    suffix_start: int
+    optics: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def row_count(self) -> int:
+        return int(len(self.row_start))
+
+    def column(self, name: str) -> list[str]:
+        if name not in self.columns:
+            raise KeyError(name)
+        return self.columns[name]
+
+
+def index_star_particles(
+    path: str | Path,
+    *,
+    columns: Iterable[str] | None = None,
+) -> StarParticleIndex:
+    """Index the particle loop by byte offset, retaining only ``columns``.
+
+    Uses the shared structure parser (same ``data_particles`` rule and
+    multiple-loop rejection as every other reader). ``columns=None`` retains
+    none; unknown requested columns are simply absent from ``columns``.
+    """
+
+    star_path = Path(path)
+    if not star_path.is_file():
+        raise FileNotFoundError(f"RELION STAR file does not exist: {star_path}")
+    requested = tuple(dict.fromkeys(columns or ()))
+    offsets: list[int] = []
+
+    def decoded_lines(handle):
+        position = 0
+        for raw in handle:
+            offsets.append(position)
+            position += len(raw)
+            yield raw.decode("utf-8")
+        offsets.append(position)
+
+    collector = _TableCollector(particle_columns=requested, keep_optics=True)
+    particle_rows: list[list[int]] = []
+
+    def on_loop_end(block, _headers, _start, _end, indices):
+        if block == PARTICLES_BLOCK:
+            particle_rows.append(list(indices))
+
+    with star_path.open("rb") as handle:
+        _scan_star(
+            decoded_lines(handle),
+            on_loop=collector.on_loop,
+            on_loop_end=on_loop_end,
+            record_line_indices=True,
+        )
+    if collector.particles is None:
+        raise ValueError(
+            f"STAR particle loop cannot be found in {star_path}: the file has no 'data_particles' block. "
+            "cryoROLE supports RELION 3.1+ STAR files with a data_particles table."
+        )
+    line_offsets = np.asarray(offsets, dtype=np.int64)
+    rows = np.asarray(particle_rows[0] if particle_rows else [], dtype=np.int64)
+    if rows.size:
+        row_start = line_offsets[rows]
+        row_end = line_offsets[rows + 1]
+        prefix_end = int(row_start[0])
+        suffix_start = int(row_end[-1])
+    else:
+        row_start = np.empty(0, dtype=np.int64)
+        row_end = np.empty(0, dtype=np.int64)
+        prefix_end = suffix_start = int(line_offsets[-1])
+    optics = {}
+    if collector.optics is not None:
+        optics = {name: list(values) for name, values in collector.optics.values.items()}
+    return StarParticleIndex(
+        path=str(star_path),
+        headers=collector.particle_headers,
+        columns={name: collector.particles.values[name] for name in requested if name in collector.particles.values},
+        row_start=row_start,
+        row_end=row_end,
+        prefix_end=prefix_end,
+        suffix_start=suffix_start,
+        optics=optics,
+    )
+
+
+def write_star_particle_subset(
+    index: StarParticleIndex,
+    row_ids: Sequence[int],
+    output_path: str | Path,
+    *,
+    header_comment: str | None = None,
+    replace_columns: dict[str, Sequence[str]] | None = None,
+) -> Path:
+    """Write ``row_ids`` of the indexed particle loop, everything else verbatim.
+
+    Rows are copied byte for byte unless ``replace_columns`` gives new values
+    (one per output row, in ``row_ids`` order) for named particle columns; only
+    those fields are rewritten. Comment/blank lines interleaved with particle
+    rows are not copied.
+    """
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    replace_columns = replace_columns or {}
+    positions = {name: index.headers.index(name) for name in replace_columns}
+    for name, values in replace_columns.items():
+        if len(values) != len(row_ids):
+            raise ValueError(f"replacement values for {name} must match the selected row count")
+    with open(index.path, "rb") as source, output.open("wb") as target:
+        if header_comment:
+            for comment_line in header_comment.splitlines():
+                target.write(f"# {comment_line}\n".encode("utf-8"))
+        target.write(source.read(index.prefix_end))
+        for out_row, row_id in enumerate(row_ids):
+            start = int(index.row_start[row_id])
+            end = int(index.row_end[row_id])
+            source.seek(start)
+            raw = source.read(end - start)
+            if positions:
+                text = raw.decode("utf-8").rstrip("\r\n")
+                fields = split_star_fields(text.strip())
+                for name, column_index in positions.items():
+                    fields[column_index] = str(replace_columns[name][out_row])
+                raw = (" ".join(fields) + "\n").encode("utf-8")
+            elif not raw.endswith((b"\n", b"\r")):
+                raw += b"\n"
+            target.write(raw)
+        source.seek(index.suffix_start)
+        target.write(source.read())
+    return output
+
+
+class _StopScan(Exception):
+    pass
+
+
+def read_star_particle_headers(path: str | Path) -> tuple[str, ...]:
+    """Return the ``data_particles`` loop headers without reading the rows."""
+
+    star_path = Path(path)
+    if not star_path.is_file():
+        raise FileNotFoundError(f"RELION STAR file does not exist: {star_path}")
+    found: list[tuple[str, ...]] = []
+
+    def on_loop(block, headers, _start):
+        if block == PARTICLES_BLOCK:
+            found.append(headers)
+            raise _StopScan
+        return None
+
+    with star_path.open("r", encoding="utf-8") as handle:
+        try:
+            _scan_star(handle, on_loop=on_loop)
+        except _StopScan:
+            pass
+    if not found:
+        raise ValueError(
+            f"STAR particle loop cannot be found in {star_path}: the file has no 'data_particles' block."
+        )
+    return found[0]

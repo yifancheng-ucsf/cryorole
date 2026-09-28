@@ -254,7 +254,39 @@ def emit_preflight_result(result, json_destination: str | None) -> None:
         print(f"WARNING: {warning}")
     for error in report["errors"]:
         print(f"REQUIRED ACTION: {error}")
+    _emit_align_diagnosis(report.get("align_diagnosis"))
     print(f"Next: {report['recommended_next_command']}")
+
+
+def _emit_align_diagnosis(diagnosis) -> None:
+    if not diagnosis:
+        return
+    if diagnosis.get("error"):
+        print(f"Align diagnosis: {diagnosis['error']}")
+        return
+    sampling = diagnosis["sampling"]
+    print(
+        f"Align candidates (estimated from {sampling['size']} sampled ref rows against all mov rows; "
+        "suggestions only):"
+    )
+    for candidate in diagnosis["candidates"]:
+        flags = []
+        if candidate.get("one_to_many_estimate") or candidate.get("many_to_one_estimate"):
+            flags.append(f"ambiguous ~{candidate.get('one_to_many_estimate', 0) + candidate.get('many_to_one_estimate', 0)}")
+        if candidate.get("warning"):
+            flags.append(candidate["warning"])
+        if candidate.get("error"):
+            flags.append(candidate["error"])
+        mark = "*" if candidate["name"] == diagnosis.get("recommended") else " "
+        print(
+            f" {mark} {candidate['name']}: ~{candidate['estimated_matched']} matched "
+            f"(ref {candidate['ref_overlap_estimate']:.0%}, mov {candidate['mov_overlap_estimate']:.0%})"
+            + (f"; {'; '.join(flags)}" if flags else "")
+        )
+    if diagnosis.get("recommended_command"):
+        print(f"Suggested: {diagnosis['recommended_command']}")
+    else:
+        print("No unambiguous candidate; see docs/relion_workflow.md (Preparing aligned STAR files).")
 
 
 def _record_guide_decision(run_dir: Path, plan: dict[str, Any], *, decision: str) -> None:

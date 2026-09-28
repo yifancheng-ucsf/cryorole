@@ -55,12 +55,39 @@ def _add_align_parser(subparsers, handlers) -> None:
     parser = subparsers.add_parser(
         "align",
         help="Align STAR metadata before cryorole run --row-aligned.",
-        description="Align STAR metadata before cryorole run --row-aligned.",
+        description=(
+            "Align STAR metadata before cryorole run --row-aligned. Every strategy is exact and auditable: "
+            "outputs are verbatim row subsets plus match_table.csv and align_report.json, and the next "
+            "`cryorole run --row-aligned` command is printed. Also corrects the stale coordinates of a recentred "
+            "RELION subtraction (--fix-subtract-coordinates)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  cryorole align --ref consensus.star --mov body.star --key-pair _rlnImageName=_rlnImageOriginalName
+  cryorole align --ref Extract_in.star --mov Extract/job055/particles.star \\
+      --coordinate-match recentered-exact --recenter-shift -9 22 -102
+  cryorole align --ref ref.star --mov mov.star --via-extraction Extract_in.star Extract/job055/particles.star \\
+      --recenter-shift -9 22 -102
+  cryorole align --fix-subtract-coordinates Subtract/job041/
+
+`cryorole preflight --ref REF --mov MOV` lists candidate keys when default matching fails.
+""",
     )
-    parser.add_argument("--ref", required=True, help="Reference STAR metadata path.")
-    parser.add_argument("--mov", required=True, help="Moving STAR metadata path.")
-    parser.add_argument("--align-id", default="default", help="Output id under alignments/. Default: default.")
-    parser.add_argument("--key", nargs="+", help="Explicit STAR key columns for alignment.")
+    parser.add_argument("--ref", help="Reference STAR metadata path.")
+    parser.add_argument("--mov", help="Moving STAR metadata path.")
+    parser.add_argument("--align-id", default="default", help="Output id. Default: default.")
+    parser.add_argument(
+        "--output-dir",
+        help="Output directory. Default: <directory of --ref>/cryorole_alignments/<align-id>/.",
+    )
+    parser.add_argument("--key", nargs="+", help="Explicit STAR key columns for alignment (same names in both files).")
+    parser.add_argument(
+        "--key-pair",
+        action="append",
+        default=None,
+        metavar="REF_COL=MOV_COL",
+        help="Cross-column key, e.g. _rlnImageName=_rlnImageOriginalName. May repeat (composite key).",
+    )
     parser.add_argument(
         "--float-tol",
         action="append",
@@ -85,6 +112,52 @@ def _add_align_parser(subparsers, handlers) -> None:
         action="store_true",
         help="Replace artifacts for this align id only; source STAR files are unchanged.",
     )
+    recenter = parser.add_argument_group("RELION recentring (exact)")
+    recenter.add_argument(
+        "--coordinate-match",
+        choices=("unchanged", "recentered-exact"),
+        help=(
+            "unchanged: micrograph + identical coordinates. recentered-exact: --ref is a RELION re-extraction "
+            "input and --mov its output; rows are paired only if predicted integer coordinates, residual origins, "
+            "angles and one-to-one assignment all verify."
+        ),
+    )
+    recenter.add_argument(
+        "--recenter-shift",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        help="RELION --recenter_x/y/z of the extraction (reference pixels).",
+    )
+    recenter.add_argument("--ref-angpix", type=float, help="RELION --ref_angpix of the extraction, if it was given.")
+    recenter.add_argument(
+        "--micrograph-angpix",
+        type=float,
+        help="Micrograph pixel size (Å). Default: _rlnMicrographPixelSize, else _rlnMicrographOriginalPixelSize.",
+    )
+    recenter.add_argument(
+        "--via-extraction",
+        nargs=2,
+        metavar=("INPUT", "OUTPUT"),
+        help=(
+            "Chain: --ref ↔ INPUT (particle names) → INPUT ↔ OUTPUT (recentered-exact) → OUTPUT ↔ --mov "
+            "(particle names). Only rows verified on every link are paired."
+        ),
+    )
+    subtract = parser.add_argument_group("RELION subtraction coordinate correction")
+    subtract.add_argument(
+        "--fix-subtract-coordinates",
+        metavar="SUBTRACT_JOB_OR_STAR",
+        help=(
+            "Write a copy of a recentred subtraction STAR with corrected _rlnCoordinateX/Y (RELION leaves them "
+            "stale). Reads note.txt of the job; every value is verified before writing."
+        ),
+    )
+    subtract.add_argument("--subtract-input", help="Subtraction input STAR (the refinement's run_data.star).")
+    subtract.add_argument("--center", nargs=3, type=float, metavar=("X", "Y", "Z"),
+                          help="Subtraction --center_x/y/z (reference-model pixels).")
+    subtract.add_argument("--model-angpix", type=float, help="Reference-model pixel size used by the subtraction.")
+    subtract.add_argument("--apply-to", help="Transfer the corrected coordinates to this STAR (joined on _rlnImageName).")
     parser.set_defaults(handler=handlers["align"])
 
 

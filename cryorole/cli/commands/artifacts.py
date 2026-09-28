@@ -35,6 +35,31 @@ def manifest_command(args) -> int:
 
 
 def align_command(args) -> int:
+    import sys
+
+    if getattr(args, "fix_subtract_coordinates", None):
+        from cryorole.align.subtract_fix import fix_subtract_coordinates
+
+        if args.ref or args.mov:
+            raise ValueError("--fix-subtract-coordinates works on one Subtract job; do not combine it with --ref/--mov")
+        report = fix_subtract_coordinates(
+            args.fix_subtract_coordinates,
+            subtract_input=args.subtract_input,
+            center=args.center,
+            model_angpix=args.model_angpix,
+            micrograph_angpix=args.micrograph_angpix,
+            apply_to=args.apply_to,
+            output_dir=args.output_dir,
+            overwrite=args.overwrite,
+            log=lambda message: print(message, file=sys.stderr),
+        )
+        print(report["outputs"]["corrected_star"])
+        return 0
+    if not args.ref or not args.mov:
+        raise ValueError("cryorole align needs --ref and --mov (or --fix-subtract-coordinates JOB)")
+    for name in ("subtract_input", "center", "model_angpix", "apply_to"):
+        if getattr(args, name, None) is not None:
+            raise ValueError(f"--{name.replace('_', '-')} is only used with --fix-subtract-coordinates")
     from cryorole.align import align_star_files
 
     report = align_star_files(
@@ -42,12 +67,28 @@ def align_command(args) -> int:
         mov=args.mov,
         align_id=args.align_id,
         key_columns=args.key,
+        key_pairs=args.key_pair,
         float_tolerances=dict(args.float_tol or ()),
         path_mode=args.path_mode,
         duplicate_policy=args.duplicate_policy,
         overwrite=args.overwrite,
+        output_dir=args.output_dir,
+        coordinate_match=args.coordinate_match,
+        recenter_shift=args.recenter_shift,
+        ref_angpix=args.ref_angpix,
+        micrograph_angpix=args.micrograph_angpix,
+        via_extraction=args.via_extraction,
     )
     print(report["output_dir"])
+    print(
+        f"Aligned {report['matched_count']} particles ({report['strategy']}); "
+        f"ref only {report['ref_only_count']}, mov only {report['mov_only_count']}, "
+        f"ambiguous {report['ambiguous_ref_row_count']}.",
+        file=sys.stderr,
+    )
+    for warning in report.get("warnings", ()):
+        print(f"warning: {warning}", file=sys.stderr)
+    print(f"Next: {report['next_command']}", file=sys.stderr)
     return 0
 
 

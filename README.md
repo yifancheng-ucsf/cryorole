@@ -121,7 +121,7 @@ cryorole preflight --ref ref_domain.star --mov mov_domain.star
 cryorole run --ref ref_domain.star --mov mov_domain.star --output-dir my_run
 ```
 
-Automatic export will produce `.star` subsets. If matching is blocked, inspect the reported identity issue and consult the [RELION workflow](docs/relion_workflow.md) before proceeding.
+Automatic export will produce `.star` subsets. If matching is blocked (for example after signal subtraction or re-extraction changed the particle names), `preflight` lists candidate keys and prints an explicit `cryorole align` command; see the [RELION workflow](docs/relion_workflow.md#preparing-aligned-star-files).
 
 ## Explore the workflow
 
@@ -347,6 +347,10 @@ You may save many regions from one run. An explicit name makes them distinguisha
 No. The diagnostic counts rows sharing quantized RO rotation-vector coordinates (default grid step `1e-8 rad`). Dispersed pairs or triples are informational. Under the initial heuristic policy, groups of at least 10 contribute to the concentration count; a warning appears if their combined size reaches 100 rows **or** 1% of all landscape rows.
 
 These thresholds are diagnostic heuristics, not scientific cutoffs. Coordinate coincidence alone establishes neither duplicate particle identity nor duplicate images. Existing identity/matching diagnostics handle their own evidence and failures. The RO diagnostic does not remove particles or change SLD.
+
+### Why are the coordinates of my subtracted particles wrong?
+
+RELION's Particle subtraction with recentring (`--center_x/y/z`) moves each box but does not update `_rlnCoordinateX/Y`, so the subtracted STAR places particles up to the projected recentring shift away from their true centre (a median of 92 px in our test data). Refinement is not affected. Re-extraction, polishing, distance-based duplicate removal and coordinate matching are affected. `cryorole preflight` warns about it, and `cryorole align --fix-subtract-coordinates Subtract/jobNNN/` writes a verified, corrected copy without changing your files. See the [RELION workflow](docs/relion_workflow.md#signal-subtraction-with-recentring-leaves-stale-coordinates).
 
 ### Why does an older 3D HTML open blank?
 

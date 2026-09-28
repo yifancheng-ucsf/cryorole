@@ -68,8 +68,11 @@ def summarize_ro_angles(angle_rad: np.ndarray) -> dict[str, Any]:
         "median_deg": percentiles["p50"],
         "p90_deg": percentiles["p90"],
         "p99_deg": percentiles["p99"],
+        "fraction_below_0_1_deg": float(np.mean(degrees < 0.1)),
+        "fraction_below_0_5_deg": float(np.mean(degrees < 0.5)),
         "fraction_below_1_deg": float(np.mean(degrees < 1.0)),
         "fraction_below_5_deg": float(np.mean(degrees < 5.0)),
+        "histogram_mode_deg": _histogram_mode(degrees),
     }
     summary["message"] = (
         f"RO angle: median {_deg(summary['median_deg'])}, 90% {_deg(summary['p90_deg'])}, "
@@ -146,9 +149,9 @@ def assess_ro_angles(
                     "code": "IDENTICAL_POSES",
                     "fraction": identical_fraction,
                     "message": (
-                        f"Reference and moving poses are identical for {_pct(identical_fraction)} of "
-                        "particles. The two inputs are probably the same refinement (e.g. the same "
-                        "job selected twice)."
+                        f"{_pct(identical_fraction)} of particles have the same orientation in both inputs "
+                        f"(RO < {policy.identical_angle_rad:g} rad). If this is not expected, check that two "
+                        "different refinements were selected (e.g. not the same job twice)."
                     ),
                 }
             )
@@ -163,8 +166,8 @@ def assess_ro_angles(
                     "message": (
                         "The two refinements give nearly identical orientations "
                         f"(median {_deg(summary['median_deg'])}, 99% {_deg(summary['p99_deg'])}). "
-                        "Either there is no measurable inter-domain motion, or both refinements "
-                        "aligned the same region. Check the masks."
+                        "Stable domains can give small relative rotations; if motion was expected, check the "
+                        "inputs and masks (both refinements may have aligned the same region)."
                     ),
                 }
             )
@@ -191,6 +194,17 @@ def sanity_warning_lines(report: Mapping[str, Any] | None) -> tuple[str, ...]:
     return tuple(
         f"[{finding['code']}] {finding['message']}" for finding in report.get("findings", ())
     )
+
+
+def _histogram_mode(degrees: np.ndarray, bin_width_deg: float = 0.5) -> float | None:
+    """Centre of the most populated RO-angle bin (display summary only)."""
+
+    if degrees.size == 0:
+        return None
+    top = max(float(degrees.max()), bin_width_deg)
+    counts, edges = np.histogram(degrees, bins=np.arange(0.0, top + bin_width_deg, bin_width_deg))
+    peak = int(np.argmax(counts))
+    return float((edges[peak] + edges[peak + 1]) / 2)
 
 
 def _resolve(path: str | Path | None) -> str | None:

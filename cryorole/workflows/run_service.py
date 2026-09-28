@@ -736,6 +736,18 @@ def _run_command_impl(
                 ),
             )
         run_summary["input_sanity"] = input_sanity
+        alignment_provenance = _alignment_provenance_for_run(args, phase1, source_identities)
+        run_summary["alignment_provenance"] = alignment_provenance
+        if alignment_provenance is not None:
+            if not alignment_provenance["attached"]:
+                reporter.warning(f"alignment provenance not attached: {alignment_provenance['reason']}")
+            else:
+                for domain, state in alignment_provenance["original_files"].items():
+                    if state["status"] == "mismatch":
+                        reporter.warning(
+                            f"alignment provenance: the original {domain} file at {state['path']} has changed since "
+                            "cryorole align (recorded lineage kept; current file differs)"
+                        )
         write_json_artifact(
             run_summary,
             run_summary_path,
@@ -773,7 +785,10 @@ def _run_command_impl(
                 if canonical_landscape is not None
                 else None
             ),
-            additional_results={"euler_metadata": euler_metadata},
+            additional_results={
+                "euler_metadata": euler_metadata,
+                "alignment_provenance": run_summary.get("alignment_provenance"),
+            },
             output_artifacts=output_artifacts,
             run_id=bundle_writer.run_id,
             source_identities=source_identities,
@@ -798,6 +813,26 @@ def _run_command_impl(
         resolved_backend=run_backend_resolved,
         matched_count=int(phase1.match_report.matched_count),
     )
+
+
+def _alignment_provenance_for_run(args, phase1, source_identities) -> dict[str, Any] | None:
+    """Verified ``cryorole align`` lineage for ``--row-aligned`` runs (never blocks the run)."""
+
+    if not getattr(args, "row_aligned", False):
+        return None
+    from cryorole.align.provenance import discover_alignment_provenance
+
+    try:
+        return discover_alignment_provenance(
+            args.ref,
+            args.mov,
+            ref_sha256=(source_identities.get("ref") or {}).get("sha256"),
+            mov_sha256=(source_identities.get("mov") or {}).get("sha256"),
+            ref_row_count=phase1.ref_row_count,
+            mov_row_count=phase1.mov_row_count,
+        )
+    except (OSError, ValueError) as exc:  # provenance must never stop an explicit --row-aligned run
+        return {"attached": False, "reason": f"could not read the align report ({exc})"}
 
 
 def _ro_angles_for_phase2(phase2) -> np.ndarray | None:

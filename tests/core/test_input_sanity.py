@@ -39,7 +39,8 @@ def test_identical_poses_are_a_strong_warning() -> None:
     report = assess_ro_angles(angles)
     assert report["level"] == "strong_warning"
     assert [f["code"] for f in report["findings"]] == ["IDENTICAL_POSES"]
-    assert "identical for 99.5% of particles" in report["findings"][0]["message"]
+    assert report["findings"][0]["message"].startswith("99.5% of particles have the same orientation in both inputs")
+    assert "If this is not expected" in report["findings"][0]["message"]
 
 
 def test_nearly_identical_orientations_are_a_warning() -> None:
@@ -49,7 +50,8 @@ def test_nearly_identical_orientations_are_a_warning() -> None:
     assert report["level"] == "warning"
     finding = report["findings"][0]
     assert finding["code"] == "NEARLY_IDENTICAL_ORIENTATIONS"
-    assert "Check the masks" in finding["message"]
+    assert "Stable domains can give small relative rotations" in finding["message"]
+    assert "check the inputs and masks" in finding["message"]
 
 
 @pytest.mark.parametrize("median_deg,p99_deg", [(0.8, 2.5), (1.2, 1.5)])
@@ -89,3 +91,11 @@ def test_same_file_finding_joins_the_report_as_strong_warning() -> None:
     assert sanity_warning_lines(report) == (
         "[SAME_INPUT_FILE] The reference and moving inputs are the same file. Select the two different refinements.",
     )
+
+
+def test_summary_reports_small_angle_fractions_and_mode() -> None:
+    degrees = np.r_[np.full(10, 0.05), np.full(30, 0.3), np.full(60, 8.1)]
+    summary = summarize_ro_angles(np.radians(degrees))
+    assert summary["fraction_below_0_1_deg"] == pytest.approx(0.10)
+    assert summary["fraction_below_0_5_deg"] == pytest.approx(0.40)
+    assert summary["histogram_mode_deg"] == pytest.approx(8.25)

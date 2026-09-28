@@ -176,6 +176,19 @@ def run_preflight(
         except (ValueError, FileNotFoundError, OSError, KeyError):
             pass
 
+    align_diagnosis = None
+    if source_types.get("ref") == "relion" and source_types.get("mov") == "relion":
+        try:
+            from cryorole.preflight.align_diagnosis import diagnose_star_matching, stale_subtraction_warnings
+
+            for finding in stale_subtraction_warnings((request.ref, request.mov)):
+                warnings.append(f"[{finding['code']}] {finding['message']}")
+            overlap = float(matching.get("overlap_smaller_input", 0.0) or 0.0)
+            if not request.row_aligned and (errors or overlap < 0.5):
+                align_diagnosis = diagnose_star_matching(request.ref, request.mov)
+        except (ValueError, FileNotFoundError, OSError, KeyError) as exc:
+            align_diagnosis = {"error": f"align diagnosis unavailable: {exc}"}
+
     matched_count = int(matching.get("matched_count", 0))
     resource = estimate_run_resources(
         matched_count=matched_count,
@@ -215,6 +228,7 @@ def run_preflight(
         "identity_reports": identity_reports,
         "matching": matching,
         "input_sanity": input_sanity,
+        "align_diagnosis": align_diagnosis,
         "run_policy": {
             "resolved_backend": "array_native" if request.run_backend == "auto" else request.run_backend,
             "k_neighbors": request.k_neighbors,
@@ -227,7 +241,11 @@ def run_preflight(
         "warnings": warnings,
         "errors": errors,
         "resolved_run_command": resolved_command,
-        "recommended_next_command": _next_command(readiness, errors, request, resolved_command),
+        "recommended_next_command": (
+            align_diagnosis["recommended_command"]
+            if readiness == "BLOCKED" and align_diagnosis and align_diagnosis.get("recommended_command")
+            else _next_command(readiness, errors, request, resolved_command)
+        ),
     }
     return PreflightResult(
         report=report,

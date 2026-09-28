@@ -78,8 +78,8 @@ visualize` for expanded display products.
 
 ## Row-Aligned Inputs
 
-Use `--row-aligned` only when row `N` in both STAR files is known to represent
-the same particle:
+Use `--row-aligned` when you **know** that row `N` in both STAR files is the
+same particle:
 
 ```bash
 cryorole run \
@@ -88,32 +88,147 @@ cryorole run \
   --row-aligned
 ```
 
-In row-aligned mode, cryoROLE checks that the row counts match, pairs rows by
-index, and records the row-aligned policy. Image names and coordinates are not
-compared, because they legitimately change after signal subtraction or
-re-extraction; the row order is the user's assertion.
+`--row-aligned` is your assertion. cryoROLE checks that the row counts match and
+that the inputs are valid, then pairs rows by index. It does not compare image
+names, coordinates or any other column, because these legitimately change after
+signal subtraction or re-extraction. Starting both refinements from the same
+STAR does not by itself prove that the final rows still correspond: RELION
+jobs, subsets and joins can reorder or drop particles.
+
+If the files were written by `cryorole align`, the run also records where they
+came from (see *Alignment lineage* below). That is provenance only and never a
+requirement for running.
 
 ## Preparing Aligned STAR Files
 
-When default matching is not enough, use `cryorole align` to prepare aligned
-STAR files. The command can use safe automatic identity keys, or explicit keys
-with `--key` when the automatic STAR keys are not enough:
+| Situation | What to do |
+| --- | --- |
+| You know row *i* in both files is the same particle | `cryorole run --row-aligned` (no `align`) |
+| Same particle names, different order or subsets | `cryorole run` (default matching) |
+| Names changed (subtraction, re-extraction, moved project) | `cryorole preflight` → review the candidate table → run the printed `align` command → run the printed `run` command |
+
+When default matching fails, `cryorole preflight` evaluates candidate keys on
+your files and prints a table with the estimated overlap and ambiguity of each,
+plus an explicit `align` command for the best unambiguous one. These are
+suggestions: `align` repeats every check on all particles before writing.
 
 ```bash
-cryorole align --ref ref_domain.star --mov mov_domain.star
+cryorole preflight --ref consensus.star --mov body.star
+# ...
+#  * _rlnImageName = _rlnImageOriginalName: ~356280 matched (ref 100%, mov 100%)
+# Suggested: cryorole align --ref consensus.star --mov body.star --key-pair _rlnImageName=_rlnImageOriginalName
 ```
 
-Then run:
+### Strategies
+
+All strategies are exact; none uses a distance tolerance unless you ask for one
+with `--float-tol`.
+
+- **Same-name keys** (`--key COL ...`): exact values, optionally with
+  `--path-mode basename|suffix:N` for path-like columns. `preflight` warns when
+  basename matching would merge distinct stacks.
+- **Cross-column keys** (`--key-pair REF_COL=MOV_COL`, repeatable). After
+  signal subtraction, `_rlnImageOriginalName` of the subtracted particles
+  usually holds the `_rlnImageName` of the particles before subtraction.
+  It records only the previous processing step.
+- **Unchanged coordinates** (`--coordinate-match unchanged`): micrograph plus
+  identical coordinates, e.g. subtraction *without* recentring.
+- **Recentred re-extraction** (`--coordinate-match recentered-exact
+  --recenter-shift X Y Z [--ref-angpix A]`): `--ref` is the STAR given to a
+  RELION re-extraction with `--recenter`, and `--mov` is its output. `X Y Z` are
+  the `--recenter_x/y/z` values (reference pixels, converted with `--ref_angpix`
+  or else the particle pixel size). For every input row cryoROLE predicts the
+  output integer coordinates and residual origins exactly as RELION does. It
+  accepts a pair only if all of these hold:
+  - the coordinates match;
+  - the origins match (0.002 Å);
+  - the angles are identical;
+  - the assignment is one-to-one.
+
+  Rows failing any check go to `unverified_*.star`. Duplicate picks that
+  converged to identical metadata cannot be told apart and go to
+  `ambiguous_*.star`. If fewer than 99 % of the remaining rows verify, nothing is
+  written. `preflight` fills in the vector from the extraction job's `note.txt`
+  when it finds one.
+- **Chain** (`--via-extraction INPUT OUTPUT --recenter-shift X Y Z`): pairs
+  `--ref` and `--mov` through an extraction job in three links:
+  1. `--ref` ↔ `INPUT` by particle name;
+  2. `INPUT` ↔ `OUTPUT` by recentered-exact;
+  3. `OUTPUT` ↔ `--mov` by particle name.
+
+  Only particles verified on every link are paired, and the report lists what
+  each link kept.
+
+### Outputs
+
+`cryorole align` writes to `<directory of --ref>/cryorole_alignments/<align-id>/`
+(or `--output-dir`):
+
+| File | Contents |
+| --- | --- |
+| `aligned_ref.star`, `aligned_mov.star` | Matched rows, same order, copied verbatim |
+| `ref_only.star`, `mov_only.star` | Rows without a partner |
+| `duplicate_*.star`, `ambiguous_*.star`, `unverified_*.star` | Rows excluded because their key was repeated, another candidate was too close, or exact verification failed |
+| `match_table.csv` | One row per aligned pair: source row IDs on both sides, plus verification columns for exact modes |
+| `align_report.json` | Strategy, key, counts, warnings, SHA-256 of inputs and outputs, and the next command |
+
+It prints the exact next command:
 
 ```bash
-cryorole run \
-  --ref alignments/default/aligned_ref.star \
-  --mov alignments/default/aligned_mov.star \
-  --row-aligned
+cryorole run --ref …/cryorole_alignments/default/aligned_ref.star \
+             --mov …/cryorole_alignments/default/aligned_mov.star --row-aligned
 ```
 
 `cryorole align` is a preparation step. It does not compute RO, SLD,
-canonicalization, selection, or export.
+canonicalization, selection, or export, and it never modifies your STAR files.
+
+### Alignment lineage
+
+When a `--row-aligned` run finds an `align_report.json` next to its inputs, it
+attaches the recorded lineage to `run_summary.json` and `run_manifest.json`
+(`alignment_provenance`). It does so only after verifying three things:
+- the hashes of the two aligned files;
+- the hash of `match_table.csv`;
+- that the match table maps one aligned row to one source row on each side.
+
+The current original files are reported separately as `verified`,
+`unavailable` or `mismatch`. If the report cannot be verified, the run prints
+`alignment provenance not attached: <reason>` and continues.
+
+## Signal Subtraction With Recentring Leaves Stale Coordinates
+
+When RELION's Particle subtraction recentres the box on a 3D point
+(`--center_x/y/z`), it writes the new offset into `_rlnOriginX/YAngst` but does
+not update `_rlnCoordinateX/Y` (confirmed in `src/particle_subtractor.cpp`). The
+subtracted STAR therefore places each particle away from the true box centre by
+the projected recentring shift. In our test data that is a median of 92 px
+(77 Å) and up to 143 px.
+
+Refinement and classification of the subtracted particles are not affected,
+because they use the images and origins. Any step that uses micrograph
+coordinates is affected:
+- re-extraction from the subtracted STAR;
+- Bayesian polishing;
+- distance-based duplicate removal;
+- coordinate-based matching (including `cryorole align`).
+
+`cryorole preflight` warns (`STALE_SUBTRACTION_COORDINATES`) when an input sits
+in a Subtract job whose `note.txt` shows recentring. To write a copy with
+corrected coordinates:
+
+```bash
+cryorole align --fix-subtract-coordinates Subtract/job041/
+# optionally transfer the correction to a later refinement of the subtracted particles:
+cryorole align --fix-subtract-coordinates Subtract/job041/ --apply-to Refine3D/job042/run_data.star
+```
+
+cryoROLE reads the centre and the subtraction input from the job's `note.txt`
+(or `--center`, `--subtract-input`, `--model-angpix`). It recomputes the shift
+RELION applied, rounding in particle pixels as RELION does. It then checks that
+this reproduces the subtracted origins and angles for at least 99 % of
+particles. Only after that does it write `…_coords_corrected.star` under
+`cryorole_alignments/`, with a `coordinate_correction_report.json`. The original
+files are never changed.
 
 ## Canonicalize
 

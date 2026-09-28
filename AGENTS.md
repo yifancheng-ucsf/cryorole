@@ -117,6 +117,10 @@ RO = R_ref^-1 R_mov
 - Key-based matching that reorders rows or drops unmatched particles must emit a prominent warning and record counts in reports/manifests.
 - Duplicate-key and low-overlap behavior must be policy-controlled and reported.
 - Match tables must preserve source-row provenance for later selection/export backtracking.
+- `--row-aligned` must never require an `align_report.json`, name or coordinate agreement, or any other row-level proof. Discovered `cryorole align` lineage is attached only after hash and match-table verification; failure to verify warns and never blocks.
+- `cryorole align` strategies must be exact. Recentred coordinate matching (`recentered-exact`) accepts a pair only when predicted integer coordinates, residual origins, angles and one-to-one assignment all verify (RELION `Euler_angles2matrix`, RELION `ROUND`; geometry in `cryorole/align/relion_geometry.py`, independent of the RO convention). Approximate coordinate matching of independently refined domains must not write aligned files.
+- `preflight` align candidates are suggestions only; they must not change the readiness verdict or run `align`.
+- Never modify RELION job folders or source STAR files; corrected or aligned copies go under `cryorole_alignments/`.
 
 ---
 
