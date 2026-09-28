@@ -170,7 +170,25 @@ with `--float-tol`.
 | `ref_only.star`, `mov_only.star` | Rows without a partner |
 | `duplicate_*.star`, `ambiguous_*.star`, `unverified_*.star` | Rows excluded because their key was repeated, another candidate was too close, or exact verification failed |
 | `match_table.csv` | One row per aligned pair: source row IDs on both sides, plus verification columns for exact modes |
-| `align_report.json` | Strategy, key, counts, warnings, SHA-256 of inputs and outputs, and the next command |
+| `ambiguous_groups.csv` | Exact modes only: each group of rows that geometry cannot tell apart, with image names, micrographs, coordinates and half-set (`_rlnRandomSubset`) where present |
+| `align_report.json` | Strategy, key, counts, coverage, suspected duplicate groups, warnings, SHA-256 of inputs and outputs, and the next command |
+
+**Coverage.** Every report carries a `coverage` block. `full` means every row of
+both files is paired. Otherwise the result is labelled a **matchable subset**, and
+`align`, `run_report.md` and the run summary all say so. A landscape from a
+matchable subset covers only the paired rows: it is neither the full data nor a
+deduplicated dataset.
+
+**Suspected duplicate groups.** In exact modes, rows whose predicted geometry
+is identical cannot be paired unambiguously. cryoROLE never guesses a pairing
+inside such a group and never removes particles. It lists the groups in
+`ambiguous_groups.csv` and reports two different numbers:
+- the rows excluded from geometric matching;
+- the rows that would be in excess *if* each group is confirmed to be one
+  physical particle.
+
+When a unique particle-name key would pair every row, the report says so and
+prints the `--key-pair` command for a full paired baseline.
 
 It prints the exact next command:
 

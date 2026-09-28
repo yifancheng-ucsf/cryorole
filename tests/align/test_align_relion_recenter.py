@@ -464,3 +464,47 @@ def test_align_cli_fix_subtract_and_next_command(tmp_path, capsys) -> None:
     assert "Next: cryorole run --ref" in capsys.readouterr().err
     with pytest.raises(ValueError, match="only used with --fix-subtract-coordinates"):
         align_command(build_parser().parse_args(["align", "--ref", str(J22), "--mov", str(J43), "--center", "1", "2", "3"]))
+
+
+def test_exact_report_labels_matchable_subset_and_duplicate_groups(tmp_path) -> None:
+    report = align_star_files(ref=J43, mov=J55, coordinate_match="recentered-exact", recenter_shift=RECENTER,
+                              output_dir=tmp_path / "out")
+    coverage = report["coverage"]
+    assert coverage["label"] == "matchable subset"
+    assert coverage["paired"] == report["matched_count"] < coverage["ref_rows"] == 1057
+    assert report["warnings"][0].startswith("MATCHABLE SUBSET")
+    groups = report["suspected_duplicate_groups"]
+    excluded = groups["rows_excluded_from_geometric_matching"]
+    assert excluded["ref"] == excluded["mov"] == report["ambiguous_ref_row_count"]
+    assert groups["rows_in_excess_if_each_group_is_one_particle"]["ref"] == excluded["ref"] - groups["groups"]
+    table = (tmp_path / "out" / "ambiguous_groups.csv").read_text(encoding="utf-8").splitlines()
+    assert table[0].startswith("group_id,side,source_row_id")
+    assert len(table) - 1 == excluded["ref"] + excluded["mov"]
+    # names give a unique one-to-one key here, so the report points to a full paired baseline
+    assert report["unique_key_available"]["key"] == "_rlnImageOriginalName"
+    assert report["unique_key_available"]["matched"] == 1057
+    assert any("full paired baseline" in w for w in report["warnings"])
+
+
+def test_full_key_pair_is_labelled_full(tmp_path) -> None:
+    report = align_star_files(ref=J22, mov=J55, key_pairs=["_rlnImageName=_rlnImageOriginalName"],
+                              output_dir=tmp_path / "full")
+    assert report["coverage"]["label"] == "full"
+    assert "suspected_duplicate_groups" not in report
+    assert not any("MATCHABLE SUBSET" in w for w in report["warnings"])
+
+
+def test_run_report_states_matchable_subset(tmp_path) -> None:
+    from cryorole.cli.main import run_command
+
+    report = align_star_files(ref=J22, mov=J55, via_extraction=[J43, J55], recenter_shift=RECENTER,
+                              output_dir=tmp_path / "out")
+    out = Path(report["output_dir"])
+    args = build_parser().parse_args([
+        "run", "--ref", str(out / "aligned_ref.star"), "--mov", str(out / "aligned_mov.star"), "--row-aligned",
+        "--output-dir", str(tmp_path / "run"), "--k-neighbors", "10", "--no-visualize",
+    ])
+    assert run_command(args) == 0
+    text = (tmp_path / "run" / "run_report.md").read_text(encoding="utf-8")
+    assert "**Matchable subset:**" in text
+    assert "Suspected duplicate groups:" in text

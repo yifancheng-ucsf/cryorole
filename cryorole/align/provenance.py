@@ -85,6 +85,8 @@ def discover_alignment_provenance(
         "aligned_row_count": report.get("aligned_row_count", report.get("matched_count")),
         "chain": report.get("chain"),
         "coordinate_match": report.get("coordinate_match"),
+        "coverage": report.get("coverage"),
+        "suspected_duplicate_groups": report.get("suspected_duplicate_groups"),
     }
     original_files = {
         "ref": _original_status(lineage["original_ref_path"], lineage["original_ref_sha256"]),

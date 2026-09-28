@@ -155,4 +155,21 @@ def _alignment_lines(provenance: Mapping[str, Any] | None) -> list[str]:
     lineage = provenance.get("lineage") or {}
     states = provenance.get("original_files") or {}
     status = ", ".join(f"{k} {v.get('status')}" for k, v in states.items())
-    return [f"- Alignment lineage: `{lineage.get('strategy')}` from `{provenance.get('align_report')}` (originals: {status})"]
+    lines = [f"- Alignment lineage: `{lineage.get('strategy')}` from `{provenance.get('align_report')}` (originals: {status})"]
+    coverage = lineage.get("coverage") or {}
+    if coverage and coverage.get("label") != "full":
+        lines.append(
+            f"- **Matchable subset:** {coverage.get('paired')} of {coverage.get('ref_rows')} ref rows "
+            f"({coverage.get('ref_fraction', 0):.1%}) were paired by `cryorole align`. This landscape covers only that "
+            "subset; it is neither the full data nor a deduplicated dataset."
+        )
+    groups = lineage.get("suspected_duplicate_groups") or {}
+    if groups:
+        excluded = groups.get("rows_excluded_from_geometric_matching", {})
+        excess = groups.get("rows_in_excess_if_each_group_is_one_particle", {})
+        lines.append(
+            f"- Suspected duplicate groups: {groups.get('groups')} groups; {excluded.get('ref')} rows per side excluded "
+            f"from geometric matching; {excess.get('ref')} rows would be in excess if each group is one particle "
+            "(not confirmed; nothing was removed)."
+        )
+    return lines

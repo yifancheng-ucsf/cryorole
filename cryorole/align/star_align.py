@@ -248,8 +248,102 @@ def align_star_files(
     }
     if plan.details:
         report.update(plan.details)
+    report["coverage"] = _coverage(matched_count, ref_rows, mov_rows)
+    if plan.ambiguous_groups:
+        groups_path = resolved_output / "ambiguous_groups.csv"
+        report["suspected_duplicate_groups"] = _write_ambiguous_groups(groups_path, plan)
+        report["output_paths"]["ambiguous_groups"] = str(groups_path)
+    if report["coverage"]["label"] != "full" and plan.strategy in {"recentered-exact", "chain"}:
+        hint = _unique_name_key_hint(ref_path, mov_path, duplicate_policy=duplicate_policy)
+        if hint:
+            report["unique_key_available"] = hint
+            warnings.append(
+                f"A unique particle-name key ({hint['key']}) pairs all {hint['matched']} rows of both files. For a "
+                f"full paired baseline run: {hint['command']}"
+            )
+    if report["coverage"]["label"] != "full":
+        warnings.insert(0, report["coverage"]["statement"])
     _write_json(paths["align_report"], report)
     return report
+
+
+def _coverage(paired: int, ref_rows: int, mov_rows: int) -> dict[str, Any]:
+    full = paired == ref_rows == mov_rows
+    label = "full" if full else "matchable subset"
+    statement = (
+        f"FULL: all {paired} rows of both files are paired."
+        if full
+        else (
+            f"MATCHABLE SUBSET: {paired} of {ref_rows} ref rows ({paired / max(ref_rows, 1):.1%}) and {paired} of "
+            f"{mov_rows} mov rows ({paired / max(mov_rows, 1):.1%}) are paired. A landscape from these files covers "
+            "only this subset; it is neither the full data nor a deduplicated dataset."
+        )
+    )
+    return {
+        "label": label,
+        "paired": paired,
+        "ref_rows": ref_rows,
+        "mov_rows": mov_rows,
+        "ref_fraction": paired / max(ref_rows, 1),
+        "mov_fraction": paired / max(mov_rows, 1),
+        "statement": statement,
+    }
+
+
+def _write_ambiguous_groups(path: Path, plan: _Plan) -> dict[str, Any]:
+    columns = ("_rlnImageName", "_rlnMicrographName", "_rlnCoordinateX", "_rlnCoordinateY", "_rlnRandomSubset",
+               "_rlnImageOriginalName")
+    sides = {}
+    for side, index in (("ref", plan.ref_index), ("mov", plan.mov_index)):
+        available = [c for c in columns if c in index.headers]
+        sides[side] = (available, index_star_particles(index.path, columns=available).columns if available else {})
+    ref_rows_total = mov_rows_total = 0
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["group_id", "side", "source_row_id", *columns])
+        for group_id, (ref_rows, mov_rows) in enumerate(plan.ambiguous_groups or []):
+            for side, rows in (("ref", ref_rows), ("mov", mov_rows)):
+                available, values = sides[side]
+                for row in rows:
+                    writer.writerow([group_id, side, row, *[values[c][row] if c in values else "" for c in columns]])
+            ref_rows_total += len(ref_rows)
+            mov_rows_total += len(mov_rows)
+    groups = len(plan.ambiguous_groups or [])
+    return {
+        "groups": groups,
+        "rows_excluded_from_geometric_matching": {"ref": ref_rows_total, "mov": mov_rows_total},
+        "rows_in_excess_if_each_group_is_one_particle": {"ref": ref_rows_total - groups, "mov": mov_rows_total - groups},
+        "evidence": "identical micrograph, predicted coordinates, residual origins (0.002 A) and angles (1e-5 deg) "
+                    "within each group, so geometry cannot tell the members apart",
+        "interpretation": "suspected duplicates; not confirmed. cryoROLE never removes particles and never guesses a "
+                          "pairing inside a group.",
+        "next_steps": [
+            "Trace the picking and extraction history (joined picking runs, overlapping picks, half-set "
+            "assignments) before deciding whether groups are one physical particle.",
+            "If a unique particle-name key pairs all rows, align with --key-pair for a full paired baseline.",
+            "Any deduplication is a separate, explicit decision; cryoROLE does not perform it.",
+        ],
+        "file": str(path),
+    }
+
+
+def _unique_name_key_hint(ref_path: Path, mov_path: Path, *, duplicate_policy: str) -> dict[str, Any] | None:
+    try:
+        mapping, info = _name_link(ref_path, mov_path, duplicate_policy="exclude")
+    except ValueError:
+        return None
+    ref_rows = info["input_rows"][0]
+    mov_rows = info["input_rows"][1]
+    if not (len(mapping) == ref_rows == mov_rows and len(set(mapping.values())) == len(mapping)):
+        return None
+    key = info["key"]
+    flag = ["--key-pair", key] if "=" in key else ["--key", key]
+    return {
+        "key": key,
+        "matched": len(mapping),
+        "command": shlex.join(["cryorole", "align", "--ref", str(ref_path), "--mov", str(mov_path), *flag,
+                               "--align-id", "full_baseline"]),
+    }
 
 
 # --------------------------------------------------------------------------- plans
@@ -277,6 +371,7 @@ class _Plan:
     unverified_mov: list[int] | None = None
     extra_columns: dict[str, list[Any]] | None = None
     details: dict[str, Any] | None = None
+    ambiguous_groups: list[tuple[list[int], list[int]]] | None = None
 
 
 def _align_by_keys(
@@ -383,6 +478,7 @@ class _ExactLink:
     reasons: dict[str, int]
     parameters: dict[str, Any]
     predicted_keys: list[str]
+    groups: list[tuple[list[int], list[int]]] | None = None  # indistinguishable (input rows, output rows)
 
 
 
@@ -469,6 +565,9 @@ def _exact_extraction_link(
         signatures.append(signature)
         signature_counts[signature] = signature_counts.get(signature, 0) + 1
     indistinguishable = {i for i, signature in enumerate(signatures) if signature_counts[signature] > 1}
+    group_rows: dict[tuple, list[int]] = {}
+    for i in sorted(indistinguishable):
+        group_rows.setdefault(signatures[i], []).append(i)
     candidate_of: dict[int, int] = {}
     unverified_in: list[int] = []
     unverified_out: list[int] = []
@@ -550,6 +649,10 @@ def _exact_extraction_link(
             },
         },
         predicted_keys=keys,
+        groups=[
+            (rows, [j for j in out_by_key.get(signature[0], []) if j not in used_out])
+            for signature, rows in group_rows.items()
+        ],
     )
     return in_index, out_index, link
 
@@ -639,6 +742,7 @@ def _align_recentered_exact(
         unverified_mov=link.unverified_out,
         extra_columns={"coord_verified": [True] * len(link.pairs), "origin_error_A": link.origin_error},
         details={"coordinate_match": {**link.parameters, **summary}},
+        ambiguous_groups=link.groups,
     )
 
 
@@ -761,6 +865,7 @@ def _align_chain(
         key_policy={"key_source": "chain", "key_columns": [link1["key"], "recentered-exact", link3["key"]]},
         zero_overlap_message="--via-extraction: no particle is linked on all three steps.",
         extra_columns={"extraction_input_row_id": in_rows, "extraction_output_row_id": out_rows},
+        ambiguous_groups=_chain_groups(exact.groups or [], ref_to_in, out_to_mov),
         details={
             "chain": {
                 "extraction_input": str(extraction_input),
@@ -786,6 +891,17 @@ def _align_chain(
             "coordinate_match": exact.parameters,
         },
     )
+
+
+def _chain_groups(groups, ref_to_in: dict[int, int], out_to_mov: dict[int, int]):
+    in_to_ref = {v: k for k, v in ref_to_in.items()}
+    mapped = []
+    for in_rows, out_rows in groups:
+        mapped.append((
+            [in_to_ref[i] for i in in_rows if i in in_to_ref],
+            [out_to_mov[j] for j in out_rows if j in out_to_mov],
+        ))
+    return mapped
 
 
 # --------------------------------------------------------------------------- outputs and helpers
