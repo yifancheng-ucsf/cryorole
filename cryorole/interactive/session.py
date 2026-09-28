@@ -78,8 +78,11 @@ class ExploreSession:
     def session_payload(self) -> dict[str, Any]:
         indices = self.display_indices
         coordinates = self.coordinates[indices]
-        euler = Rotation.from_rotvec(coordinates).as_euler(
-            self.euler_sequence, degrees=True
+        # SciPy < 1.14 rejects an empty Rotation, e.g. when the display filter keeps no rows.
+        euler = (
+            Rotation.from_rotvec(coordinates).as_euler(self.euler_sequence, degrees=True)
+            if len(coordinates)
+            else np.empty((0, 3), dtype=float)
         )
         keys = self.arrays.particle_key[indices]
         return {
