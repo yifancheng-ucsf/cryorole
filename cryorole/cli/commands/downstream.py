@@ -6,12 +6,15 @@ import os
 import shlex
 import sys
 
-from cryorole.canonicalize.service import CanonicalizeRequest, canonicalize
+from cryorole.canonicalize.service import CanonicalizeRequest, canonicalize_bundle
+from cryorole.cli.resolution import note_raw_space_with_canonical_frames, resolve_cli_ids
 from cryorole.select import SelectRequest, create_selection
 from cryorole.visualize import VisualizationRequest, visualize
 
 
 def select_command(args) -> int:
+    resolve_cli_ids(args, canonical=True)
+    note_raw_space_with_canonical_frames(args)
     result = create_selection(SelectRequest.from_namespace(args))
     for path, count in zip(result.selection_dirs, result.selected_counts):
         print(f"[cryorole] selection {path.name!r}: {count} particles; saved to {path}", file=sys.stderr)
@@ -27,6 +30,7 @@ def _quote_argument(value: str) -> str:
 
 
 def visualize_command(args) -> int:
+    resolve_cli_ids(args, canonical=True, selection="if_selected_landscape")
     result = visualize(VisualizationRequest.from_namespace(args))
     report = result.report
     counts = report.get("n_points_after_display_filter") or {}
@@ -43,7 +47,11 @@ def visualize_command(args) -> int:
 
 
 def canonicalize_command(args) -> int:
-    return canonicalize(CanonicalizeRequest.from_namespace(args))
+    if not (getattr(args, "landscape", None) and getattr(args, "output_dir", None)):
+        resolve_cli_ids(args)
+    result = canonicalize_bundle(CanonicalizeRequest.from_namespace(args))
+    print(str(result.output_dir))
+    return 0
 
 
 def animate_command(args) -> int:

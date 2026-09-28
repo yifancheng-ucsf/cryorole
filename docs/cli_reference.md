@@ -1,7 +1,45 @@
 # CLI Reference
 
-Use `cryorole COMMAND --help` as the executable source of truth. This page
-summarizes the public Workflow UX commands.
+Use `cryorole COMMAND --help` as the executable source of truth; most commands
+end their help with copyable examples. This page summarizes the public Workflow
+UX commands. The same operations are available from Python through
+`cryorole.api` (see `docs/python_api.md`).
+
+## Common behaviour
+
+`cryorole --version` prints the installed version.
+
+**Errors.** Expected problems print one line, `cryorole: error: MESSAGE`,
+followed where possible by `  what to do: REMEDY`, and exit with status 2.
+Unexpected internal errors print a short report and exit with status 1; set
+`CRYOROLE_DEBUG=1` to see the Python traceback instead. Ctrl-C exits with
+status 130. `preflight` keeps its own readiness codes (below), and `status` /
+`next` exit with 3 for an unusable bundle.
+
+**Omitted `--run-dir`.** Commands that read a run bundle (`canonicalize`,
+`visualize`, `select`, `export`, `explore`, `status`, `next`) use, in order:
+the current directory if it is a run bundle, then `./cryorole_outputs` (the
+default `run --output-dir`). Otherwise they stop and list the bundles found in
+the current directory; they never pick one of several.
+
+**Omitted `--canonical-id`** (`visualize`, `select`, `explore` with
+`--space canonical`) uses the bundle's only canonical frame. With no frame the
+command asks you to run `canonicalize` first; with several it lists them.
+`canonicalize --canonical-id` still names the frame being *written* (default
+`default`).
+
+**Omitted `--selection-id`** (`export`, and `visualize --use-selected-landscape`)
+uses the bundle's only selection, with the same rules. `select` always requires
+an explicit `--selection-id`: a selection is a decision you name.
+
+Every value filled in this way is printed to stderr (for example
+`[cryorole] using --run-dir cryorole_outputs (./cryorole_outputs is the default
+run output)`) and recorded under `resolved_by` in the report the command writes.
+A raw-space `select` in a bundle that has canonical frames prints a note, unless
+`--space raw` was given explicitly.
+
+Older option spellings (`canonicalize --fit-top-fraction`, `animate
+--sld-threshold`, `visualize --alpha`, …) remain accepted as hidden aliases.
 
 ## Preflight
 
@@ -14,6 +52,29 @@ cryorole preflight --ref REF --mov MOV [--output-dir RUN] [--row-aligned]
 Performs source identity, convention, pose-schema, identity/matching, and
 resource checks without creating `RUN`. `--json` with no path writes JSON to
 stdout. Exit codes are 0 ready, 1 ready with warnings, and 2 blocked.
+
+Preflight also checks the machine (`environment` in the JSON report): the
+cryoROLE, Python, NumPy, SciPy, pandas and Matplotlib versions; whether the
+output location can be written (blocking if not); whether `RUN` already exists
+(a warning, because `run` then needs `--overwrite`); free disk against the
+estimated bundle size (blocking below a 20 % margin); and available memory
+against the estimated peak (a warning).
+
+Selecting the same file for `--ref` and `--mov` (same path, or a copy with the
+same SHA-256) is blocked before any matching. A formal `run` records the same
+finding as a strong warning and always reports the RO-angle summary and any
+input-sanity warnings (see `docs/output_files.md`, "Input sanity").
+
+`--row-aligned` is the user's assertion that row N is the same particle in both
+files. cryoROLE checks only that the row counts are equal and then pairs rows
+by index. It deliberately does not compare image names, coordinates, or any
+other column, because these can legitimately differ between the two
+refinements (for example after RELION signal subtraction or re-extraction).
+
+RELION STAR inputs: the particle table is the loop in the `data_particles`
+block (RELION 3.1+). A file with more than one `data_particles` loop is
+rejected rather than merged. `run`, metadata selection, and export all use this
+same rule.
 
 ## Run dry-run
 
@@ -29,15 +90,39 @@ full-data log-SLD distribution. `--no-visualize` skips them; every run still
 writes concise `RUN/run_report.md`. Expanded display controls are owned by
 `cryorole visualize`, not `run`.
 
+## Align
+
+```bash
+cryorole align --ref REF --mov MOV [--key COL ... | --key-pair REF_COL=MOV_COL ...]
+               [--coordinate-match unchanged|recentered-exact --recenter-shift X Y Z [--ref-angpix A]]
+               [--via-extraction INPUT OUTPUT --recenter-shift X Y Z]
+               [--output-dir DIR] [--align-id ID] [--overwrite]
+cryorole align --fix-subtract-coordinates SUBTRACT_JOB [--apply-to STAR]
+               [--subtract-input STAR] [--center X Y Z] [--model-angpix A]
+```
+
+Establishes particle correspondence when default matching fails, and writes
+verbatim aligned STAR files with `match_table.csv` and `align_report.json`. The
+default location is `<directory of --ref>/cryorole_alignments/<align-id>/`. It
+prints the exact `cryorole run … --row-aligned` command to run next.
+`--fix-subtract-coordinates` writes a verified copy of a recentred RELION
+subtraction with corrected coordinates. See `docs/relion_workflow.md`.
+
+When default STAR matching fails, `preflight` adds an `align_diagnosis` block
+and prints a candidate table and a suggested `align` command. These are
+suggestions only.
+
 ## Status and next
 
 ```bash
-cryorole status --run-dir RUN [--json [PATH]]
-cryorole next --run-dir RUN [--json [PATH]]
+cryorole status [--run-dir RUN] [--json [PATH]]
+cryorole next [--run-dir RUN] [--json [PATH]]
 ```
 
 Status reads real artifacts and integrity evidence. Next returns exact
-required/recommended/optional commands derived from that status.
+required/recommended/optional commands derived from that status. Both exit 0
+for a completed (or legacy) bundle and 3 when the bundle is missing, failed or
+incomplete, so scripts can test the result; the output is printed either way.
 
 ## Explore
 
@@ -70,8 +155,8 @@ explicit run-only action and never creates a selection or export.
 ## Existing scientific commands
 
 ```bash
-cryorole run --ref REF --mov MOV [--output-dir RUN]
-cryorole canonicalize --run-dir RUN
+cryorole run --ref REF --mov MOV [--output-dir RUN] [--overwrite]
+cryorole canonicalize --run-dir RUN [--canonical-id ID] [--overwrite]
 cryorole visualize --run-dir RUN --space raw|canonical
 # default: two PNG 3-view projections for sld_display >= 1
 cryorole visualize --run-dir RUN --view 2d,1d
@@ -80,8 +165,15 @@ cryorole select --run-dir RUN --selection-id ID --space SPACE -c A B C -r DEG
 cryorole export --run-dir RUN --selection-id ID --domain ref|mov|both
 ```
 
-See [Output files](output_files.md) for artifact contents and
-[Workflow tutorial](workflow_ux.md) for scientific and display boundaries.
+`run --overwrite` replaces an existing bundle only after the new run has
+completed and validated; `canonicalize --overwrite` replaces
+`canonical/<canonical-id>/` only.
+
+`export` refuses to write a subset when the source particle table no longer has
+the row count recorded by the run.
+
+See `docs/output_files.md` for the artifact layout and the scientific and
+display distinctions.
 
 
 ## Visualization terminology
@@ -94,7 +186,8 @@ hidden compatibility alias. Supplying both names is an error.
 ## Selection modes and names
 
 `cryorole select --help` groups all controls by mode and provides complete
-examples. Every command requires `--run-dir RUN --selection-id NAME`; choose a
+examples. Every command requires `--selection-id NAME` (and `--run-dir RUN`
+unless it can be resolved as described under Common behaviour); choose a
 name such as `region_01` or `high_sld`. Names cannot contain path separators or redirect output outside selections/.
 No default is assigned. Reusing a name
 requires explicit `--overwrite`; choose another name to keep both selections.
@@ -104,7 +197,7 @@ requires explicit `--overwrite`; choose another name to keep both selections.
 | `radius` | `--center A B C` and one of `--radius DEG`, `--radius-rad RAD` | `--center-representation euler|rotvec`, `--metric so3|rotvec`. Euler center: degrees; rotvec center: radians. Default metric: SO(3) geodesic. |
 | `threshold` | `--sld-min`, `--sld-max`, or both | Inclusive `sld_raw` bounds; independent of display filters. |
 | `range` | Repeatable `--range-bound AXIS:LOWER:UPPER` | Euler alpha/beta/gamma in degrees OR rotvec x/y/z in radians. Inclusive bounds, intersected across axes; blank sides are open. Euler reversed bounds wrap across the seam; rotvec reversed bounds are invalid. Last bound wins for a repeated axis. |
-| `random` | `--fraction F`, with `0 < F <= 1` | Optional non-negative `--seed`; omitted seed uses fresh randomness and is recorded as null. Samples `ceil(F*N)` rows without replacement from all parent rows. |
+| `random` | `--fraction F`, with `0 < F <= 1` | Optional non-negative `--seed`. When omitted, a seed is generated; either way the seed used is recorded (`random_seed`, with `random_seed_source` `user` or `generated`), so rerunning with `--seed` reproduces the selection. Samples `ceil(F*N)` rows without replacement from all parent rows. |
 | `metadata` | `--metadata-domain ref|mov`, `--metadata-column`, and one of `--metadata-value VALUES`, `--split-by-value` | Comma-separated values form a union. Uses run-time source rows; split writes standard child selections named `NAME_VALUE` with filename-safe components. |
 
 `--space raw|canonical` chooses the parent coordinate space; `--canonical-id`

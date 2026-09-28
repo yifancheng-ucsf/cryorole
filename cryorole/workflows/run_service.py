@@ -6,6 +6,7 @@ arguments and publishes the returned result.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ import pandas as pd
 
 from cryorole.canonicalize.service import canonicalize_run_artifacts
 from cryorole.core.density import compute_landscape_density_arrays
+from cryorole.core.input_sanity import assess_ro_angles, same_input_file, sanity_warning_lines
 from cryorole.core.display_policy import max_displayed_density
 from cryorole.core.euler_conventions import RAW_EULER_ANGLE_COLUMNS, resolve_euler_convention
 from cryorole.export import (
@@ -44,7 +46,7 @@ from cryorole.workflows.input_policy import (
     resolve_input_policies,
 )
 from cryorole.workflows.pipeline_runner import PipelineRunner
-from cryorole.workflows.progress import ProgressReporter
+from cryorole.workflows.progress import CancelToken, ProgressCallback, ProgressReporter
 from cryorole.workflows.run_pipeline import (
     compute_relative_orientation_arrays,
     preflight_and_normalize_matched_arrays,
@@ -114,6 +116,9 @@ class RunExecutionContext:
 
     runner: PipelineRunner | None = None
     allow_unverified_test_sources: bool = False
+    progress: ProgressCallback | None = None
+    cancel_token: CancelToken | None = None
+    stream_progress: bool = True
 
 
 @dataclass(frozen=True)
@@ -179,6 +184,8 @@ def execute_run(
             context=context,
             bundle_writer=bundle_writer,
         )
+        if context.cancel_token is not None:
+            context.cancel_token.raise_if_cancelled("publishing the run bundle")
         bundle_writer.commit()
     return replace(result, output_dir=final_output_dir)
 
@@ -199,6 +206,7 @@ def _preflight_request_from_args(
     args,
     *,
     resolved_input_policies: ResolvedInputPolicies | None = None,
+    same_file_policy: str = "block",
 ) -> PreflightRequest:
     return PreflightRequest(
         ref=args.ref,
@@ -218,6 +226,8 @@ def _preflight_request_from_args(
         identity_columns=tuple(getattr(args, "identity_column", ()) or ()),
         mapping_file=getattr(args, "mapping_file", None),
         resolved_input_policies=resolved_input_policies,
+        same_file_policy=same_file_policy,
+        check_environment=False,
     )
 
 
@@ -238,6 +248,9 @@ def _run_command_impl(
         verbose=args.verbose,
         profile_time=args.profile_time,
         profile_memory=args.profile_memory,
+        stream=None if context.stream_progress else False,
+        callback=context.progress,
+        cancel_token=context.cancel_token,
     )
     reporter.sample_memory("start")
     reporter.info(
@@ -320,6 +333,7 @@ def _run_command_impl(
                 _preflight_request_from_args(
                     args,
                     resolved_input_policies=resolved_inputs,
+                    same_file_policy="warn",
                 ),
                 source_identities=source_identities,
                 array_preflight_fn=preflight_and_normalize_matched_arrays,
@@ -404,6 +418,18 @@ def _run_command_impl(
             )
             phase2 = _RunPhase2(compatibility_result=compatibility_phase2)
     reporter.sample_memory("ro_computed")
+    input_sanity = assess_ro_angles(
+        _ro_angles_for_phase2(phase2),
+        same_file=same_input_file(
+            source_identities.get("ref"),
+            source_identities.get("mov"),
+            ref_path=args.ref,
+            mov_path=args.mov,
+        ),
+    )
+    reporter.info(str(input_sanity["ro_angle_summary"]["message"]))
+    for warning in sanity_warning_lines(input_sanity):
+        reporter.warning(warning)
     bundle_writer.set_state("computing_sld")
     raw_arrays: LandscapeArrays | None = None
     with reporter.timed_stage(
@@ -417,14 +443,15 @@ def _run_command_impl(
         density_query_batch_size=args.density_query_batch_size,
     ):
         if run_backend_resolved == "array_native":
-            raw_arrays, density_report = compute_landscape_density_arrays(
-                ro_arrays.particle_key,
-                ro_arrays.rotation_vector,
-                ro_arrays.ref_source_row_id,
-                ro_arrays.mov_source_row_id,
-                policy=density_policy,
-                query_batch_size=args.density_query_batch_size,
-            )
+            with _explain_collapsed_sld(input_sanity):
+                raw_arrays, density_report = compute_landscape_density_arrays(
+                    ro_arrays.particle_key,
+                    ro_arrays.rotation_vector,
+                    ro_arrays.ref_source_row_id,
+                    ro_arrays.mov_source_row_id,
+                    policy=density_policy,
+                    query_batch_size=args.density_query_batch_size,
+                )
             raw_landscape = _landscape_from_run_arrays(
                 raw_arrays,
                 density_report=density_report,
@@ -433,11 +460,12 @@ def _run_command_impl(
             )
             phase3 = _RunPhase3(landscape=raw_landscape, arrays=raw_arrays)
         else:
-            compatibility_phase3 = runner.compute_density_for_ro_result(
-                phase2.compatibility_result,
-                density_policy=density_policy,
-                density_query_batch_size=args.density_query_batch_size,
-            )
+            with _explain_collapsed_sld(input_sanity):
+                compatibility_phase3 = runner.compute_density_for_ro_result(
+                    phase2.compatibility_result,
+                    density_policy=density_policy,
+                    density_query_batch_size=args.density_query_batch_size,
+                )
             phase3 = _RunPhase3(
                 landscape=compatibility_phase3.landscape,
                 compatibility_result=compatibility_phase3,
@@ -716,6 +744,19 @@ def _run_command_impl(
                     else len(raw_landscape.data)
                 ),
             )
+        run_summary["input_sanity"] = input_sanity
+        alignment_provenance = _alignment_provenance_for_run(args, phase1, source_identities)
+        run_summary["alignment_provenance"] = alignment_provenance
+        if alignment_provenance is not None:
+            if not alignment_provenance["attached"]:
+                reporter.warning(f"alignment provenance not attached: {alignment_provenance['reason']}")
+            else:
+                for domain, state in alignment_provenance["original_files"].items():
+                    if state["status"] == "mismatch":
+                        reporter.warning(
+                            f"alignment provenance: the original {domain} file at {state['path']} has changed since "
+                            "cryorole align (recorded lineage kept; current file differs)"
+                        )
         write_json_artifact(
             run_summary,
             run_summary_path,
@@ -753,7 +794,10 @@ def _run_command_impl(
                 if canonical_landscape is not None
                 else None
             ),
-            additional_results={"euler_metadata": euler_metadata},
+            additional_results={
+                "euler_metadata": euler_metadata,
+                "alignment_provenance": run_summary.get("alignment_provenance"),
+            },
             output_artifacts=output_artifacts,
             run_id=bundle_writer.run_id,
             source_identities=source_identities,
@@ -778,6 +822,59 @@ def _run_command_impl(
         resolved_backend=run_backend_resolved,
         matched_count=int(phase1.match_report.matched_count),
     )
+
+
+def _alignment_provenance_for_run(args, phase1, source_identities) -> dict[str, Any] | None:
+    """Verified ``cryorole align`` lineage for ``--row-aligned`` runs (never blocks the run)."""
+
+    if not getattr(args, "row_aligned", False):
+        return None
+    from cryorole.align.provenance import discover_alignment_provenance
+
+    try:
+        return discover_alignment_provenance(
+            args.ref,
+            args.mov,
+            ref_sha256=(source_identities.get("ref") or {}).get("sha256"),
+            mov_sha256=(source_identities.get("mov") or {}).get("sha256"),
+            ref_row_count=phase1.ref_row_count,
+            mov_row_count=phase1.mov_row_count,
+        )
+    except (OSError, ValueError) as exc:  # provenance must never stop an explicit --row-aligned run
+        return {"attached": False, "reason": f"could not read the align report ({exc})"}
+
+
+def _ro_angles_for_phase2(phase2) -> np.ndarray | None:
+    """Return per-particle RO angles (rad) for either run backend."""
+
+    if phase2.ro_arrays is not None:
+        return np.asarray(phase2.ro_arrays.angle_rad, dtype=float)
+    ro_result = getattr(phase2.compatibility_result, "ro_result", None)
+    data = getattr(ro_result, "data", None)
+    if data is None or "rotvec_ro" not in getattr(data, "columns", ()):
+        # Injected test runners may not expose an ROResult.
+        return None
+    if len(data) == 0:
+        return np.empty(0, dtype=float)
+    rotvecs = np.stack(data["rotvec_ro"].to_numpy())
+    return np.linalg.norm(np.asarray(rotvecs, dtype=float), axis=1)
+
+
+@contextmanager
+def _explain_collapsed_sld(input_sanity: dict[str, Any]):
+    """Turn the undefined-SLD error into the input-sanity explanation."""
+
+    try:
+        yield
+    except ValueError as exc:
+        lines = sanity_warning_lines(input_sanity)
+        if "SLD is undefined" not in str(exc) or not lines:
+            raise
+        raise ValueError(
+            " ".join(lines)
+            + " cryoROLE stopped before writing a landscape: every particle has the same relative "
+            "orientation, so the local density (SLD) is undefined."
+        ) from exc
 
 
 def _resolve_run_euler_metadata(args) -> dict[str, object]:

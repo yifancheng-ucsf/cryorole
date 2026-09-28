@@ -63,6 +63,15 @@ Canonicalization, visualization, selection, and export already have a working co
 - Formal run consumption must revalidate source content identity, not only size and modification time.
 - CLI select and interactive Confirm must use the same standard Selection artifact writer.
 
+### Frontends: CLI and `cryorole.api`
+
+- Library code outside `cryorole/cli/` never calls `print`, `sys.exit`, `input` or `argparse` (enforced by `tests/architecture/test_service_boundaries.py`; the legacy script `workflows/rotate_landscape.py` is the only listed exception). User-relevant warnings go through `cryorole.logs.warn_user` / `notify_user`; progress goes through `ProgressReporter` (stderr for the CLI, a callback for the API).
+- `cryorole.api` calls the same typed services as the CLI and must not import `cryorole.cli`. It never prints; it raises `CryoroleError(code, message, remedy)` for user-actionable problems.
+- Long operations accept a `CancelToken`, checked at stage boundaries; a cancelled run publishes nothing and leaves no staging or failed bundle.
+- Omitted `--run-dir` / `--canonical-id` / `--selection-id` are resolved only by `cryorole.workflow.resolve`, and only when exactly one candidate exists (run dir: current directory bundle, then `./cryorole_outputs`). Never pick one of several; list them. Print every implicit value and record it under `resolved_by` in the written report. `select` always requires an explicit `--selection-id`.
+- The CLI error boundary prints `cryorole: error: …` plus `what to do: …` and exits 2 (1 for internal errors, 130 for Ctrl-C); `status`/`next` exit 3 for missing, failed or incomplete bundles; `preflight` keeps its 0/1/2 readiness codes.
+- Option synonyms are hidden aliases; each option has one visible spelling.
+
 ---
 
 ## Non-negotiable scientific invariants
@@ -103,7 +112,11 @@ RO = R_ref^-1 R_mov
 - Default identity key is `uid`.
 - Native pose field is `alignments3D/pose`.
 - Native pose encoding is rotation vector / axis-angle.
-- Internal active matrices must be derived from `Rotation.from_rotvec(...).as_matrix()`.
+- The CryoSPARC pose is the back-projection rotation, the inverse of RELION's
+  reference-to-image rotation. Internal active matrices must be derived with the
+  pyem-consistent bridge `Rotation.from_rotvec(pose).as_matrix().T`, only through
+  `ConventionPolicy.cryosparc_default()` / `ConventionResolver`, and recorded in the
+  manifest. The golden test against pyem `csparc2star.py` output must keep passing.
 - Preserve vector-valued `.cs` fields without flattening them incorrectly.
 
 ### Matching
@@ -113,6 +126,10 @@ RO = R_ref^-1 R_mov
 - Key-based matching that reorders rows or drops unmatched particles must emit a prominent warning and record counts in reports/manifests.
 - Duplicate-key and low-overlap behavior must be policy-controlled and reported.
 - Match tables must preserve source-row provenance for later selection/export backtracking.
+- `--row-aligned` must never require an `align_report.json`, name or coordinate agreement, or any other row-level proof. Discovered `cryorole align` lineage is attached only after hash and match-table verification; failure to verify warns and never blocks.
+- `cryorole align` strategies must be exact. Recentred coordinate matching (`recentered-exact`) accepts a pair only when predicted integer coordinates, residual origins, angles and one-to-one assignment all verify (RELION `Euler_angles2matrix`, RELION `ROUND`; geometry in `cryorole/align/relion_geometry.py`, independent of the RO convention). Approximate coordinate matching of independently refined domains must not write aligned files.
+- `preflight` align candidates are suggestions only; they must not change the readiness verdict or run `align`.
+- Never modify RELION job folders or source STAR files; corrected or aligned copies go under `cryorole_alignments/`.
 
 ---
 
@@ -168,7 +185,7 @@ RO = R_ref^-1 R_mov
 - Do not use naive Euler-space Euclidean distance for scientific radius selection.
 - Euler center input or Euler range selection must record and obey the explicit Euler convention policy.
 - Top-density selection defaults to including all rows, including display-only SLD outliers; excluding display outliers must be an explicit selection policy and recorded.
-- Random-fraction selection is allowed only as an explicit selection mode with a recorded fraction, seed, candidate count, and selected count.
+- Random-fraction selection is allowed only as an explicit selection mode with a recorded fraction, seed, candidate count, and selected count. When `--seed` is omitted a seed is generated and recorded (`random_seed_source: generated`); a random selection never records a null seed.
 - Source-metadata selection is allowed only against the run-time ref/mov source metadata, using recorded `ref_source_row_id` or `mov_source_row_id`; the metadata domain, column, selected values, and source-row policy must be recorded.
 - Public metadata value selection may accept comma-separated values such as `--metadata-value 1,3`.
 - Metadata split selection may create one selection per unique metadata value, but each child selection must remain a standard selection artifact and preserve export backtracking.
@@ -226,7 +243,7 @@ For public run outputs and workflow behavior, see `docs/output_files.md` and `do
 
 ---
 
-## Things Codex must not do
+## Things contributors and coding agents must not do
 
 - Do not change RO definition.
 - Do not change passive/active interpretation silently.

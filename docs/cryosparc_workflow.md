@@ -18,8 +18,25 @@ The default CryoSPARC pose field is:
 alignments3D/pose
 ```
 
-The pose is interpreted as a rotation vector / axis-angle representation and is
-converted to cryoROLE internal active rotation matrices during normalization.
+The pose is an axis-angle rotation vector in radians. CryoSPARC defines it as
+the rotation applied during image back-projection, which is the inverse
+(transpose) of the reference-to-image rotation that RELION's
+`_rlnAngleRot/Tilt/Psi` describe. cryoROLE therefore converts it with the same
+mapping as pyem `csparc2star.py`:
+
+```text
+active_matrix = Rotation.from_rotvec(pose).as_matrix().T
+```
+
+A `.cs` input and the same particles converted to STAR with `csparc2star.py`
+give identical relative orientations; a golden test against real
+`csparc2star.py` output locks this. The rule is recorded as the CryoSPARC `ConventionPolicy` in
+`run_manifest.json` and in the preflight report. Rotation vectors of any norm,
+including the ones above pi that CryoSPARC sometimes writes, are valid.
+
+Runs made with cryoROLE before this rule was introduced used
+`Rotation.from_rotvec(pose).as_matrix()` without the transpose. They have the
+same RO angles but different RO axes, so re-run any `.cs`-based analysis.
 
 ## Default Matching
 
@@ -50,7 +67,8 @@ cryorole run \
 ```
 
 In row-aligned mode, cryoROLE requires equal row counts and does not key-match,
-reorder, or drop particles.
+reorder, or drop particles. No column (including `uid`) is compared: the row
+order is the user's assertion.
 
 ## Standard Workflow
 

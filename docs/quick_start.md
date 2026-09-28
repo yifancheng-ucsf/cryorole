@@ -1,8 +1,8 @@
 # cryoROLE 2.0 Quick Start
 
-This guide shows the smallest practical cryoROLE 2.0 workflow. See
-[Output files](output_files.md) for saved results and the
-[Workflow tutorial](workflow_ux.md) for scientific and display boundaries.
+This guide shows the smallest practical cryoROLE 2.0 workflow. For the
+artifact layout, see `docs/output_files.md`; for every command option, see
+`docs/cli_reference.md`.
 
 ## Install
 
@@ -135,29 +135,33 @@ Use default matching when possible:
 - RELION STAR: `_rlnTomoParticleName`, then `_rlnImageName` / `rlnImageName`
   when safe
 
-Use `--row-aligned` only when you know the files are already particle-aligned:
+Use `--row-aligned` when you know that row `N` in both files is the same particle:
 
 ```bash
 cryorole run --ref aligned_ref.star --mov aligned_mov.star --row-aligned
 ```
 
 In row-aligned mode, cryoROLE pairs row `N` with row `N` and requires equal row
-counts.
+counts; it does not compare names or coordinates.
 
-If default matching is not safe, prepare aligned metadata first. `cryorole align`
-can use safe automatic STAR identity keys, or explicit keys with
-`cryorole align --key ...` when the automatic keys are not enough:
+If default matching fails (for example after signal subtraction or
+re-extraction changed the particle names), `cryorole preflight` lists candidate
+keys and prints an explicit `cryorole align` command. `align` writes verified,
+verbatim aligned files and prints the `run` command to use next:
 
 ```bash
-cryorole align --ref ref_domain.star --mov mov_domain.star
+cryorole preflight --ref ref_domain.star --mov mov_domain.star
+cryorole align --ref ref_domain.star --mov mov_domain.star --key-pair _rlnImageName=_rlnImageOriginalName
 cryorole run \
-  --ref alignments/default/aligned_ref.star \
-  --mov alignments/default/aligned_mov.star \
+  --ref cryorole_alignments/default/aligned_ref.star \
+  --mov cryorole_alignments/default/aligned_mov.star \
   --row-aligned
 ```
 
-Manual pre-alignment is also acceptable when the row-order assertion is true and
-auditable.
+See `docs/relion_workflow.md` for all strategies, including recentred
+re-extraction and the correction of stale coordinates after RELION subtraction
+with recentring. Manual pre-alignment is also acceptable when the row-order
+assertion is true and auditable.
 
 ## What the Main Artifacts Mean
 

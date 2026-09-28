@@ -15,8 +15,10 @@ from cryorole.cli.main import (
     export_selection_command,
     main,
     manifest_command,
+    next_command,
     run_command,
     select_command,
+    status_command,
     visualize_command,
 )
 from cryorole.export import export_selection, write_landscape_json, write_run_manifest
@@ -593,8 +595,12 @@ def test_run_manifest_records_resolved_cryosparc_uid_and_core_policies(tmp_path)
     assert active_policies["identity_policy_ref"]["identity_mode"] == "cryosparc_uid"
     assert active_policies["identity_policy_mov"]["identity_mode"] == "cryosparc_uid"
     assert active_policies["identity_policy_ref"]["identity_columns"] == ["uid"]
-    assert active_policies["convention_policy_ref"] is None
-    assert active_policies["convention_policy_mov"] is None
+    for domain in ("ref", "mov"):
+        convention = active_policies[f"convention_policy_{domain}"]
+        assert convention["source_software"] == "cryosparc"
+        assert convention["conversion_rule"] == (
+            "active_matrix = scipy Rotation.from_rotvec(pose).as_matrix().T"
+        )
     assert active_policies["match_policy"]["join_type"] == "inner"
     assert active_policies["density_policy"]["k_neighbors"] == 50
     assert active_policies["density_policy"]["sld_metric"] == "rotvec_euclidean"
@@ -1202,11 +1208,17 @@ def test_visualize_rejects_removed_public_arguments(removed_arg) -> None:
         parser.parse_args(["visualize", "--run-dir", "run", removed_arg, "value"])
 
 
-def test_visualize_requires_run_dir() -> None:
-    parser = build_parser()
+def test_visualize_without_run_dir_and_no_bundle_explains_what_to_do(tmp_path, monkeypatch) -> None:
+    from cryorole.errors import CryoroleError
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["visualize"])
+    monkeypatch.chdir(tmp_path)
+    args = build_parser().parse_args(["visualize"])
+    assert args.run_dir is None
+
+    with pytest.raises(CryoroleError) as excinfo:
+        visualize_command(args)
+    assert excinfo.value.code == "run_dir_unresolved"
+    assert "Add --run-dir RUN" in excinfo.value.remedy
 
 
 def test_visualize_visual_id_controls_raw_output_path(tmp_path) -> None:
@@ -1760,11 +1772,17 @@ def test_visualize_selection_id_filters_canonical_landscape(tmp_path) -> None:
     assert report["n_points_input"] == 2
 
 
-def test_visualize_selection_id_requires_run_dir() -> None:
-    parser = build_parser()
+def test_visualize_selection_id_without_run_dir_lists_candidate_bundles(tmp_path, monkeypatch) -> None:
+    from cryorole.errors import CryoroleError
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["visualize", "--selection-id", "subset"])
+    for name in ("run_a", "run_b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "run_manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    args = build_parser().parse_args(["visualize", "--selection-id", "subset"])
+
+    with pytest.raises(CryoroleError, match="bundles here: run_a, run_b"):
+        visualize_command(args)
 
 
 def test_visualize_selection_id_missing_artifact_fails_clearly(tmp_path) -> None:
@@ -2049,7 +2067,8 @@ def test_canonicalize_help_omits_visualization_options(capsys) -> None:
     assert "--run-dir" in help_text
     assert "--canonical-id" in help_text
     assert "--fit-top" in help_text
-    assert "--fit-top-fraction" in help_text
+    assert "--fit-top-fraction" not in help_text  # hidden compatibility alias
+    assert "--overwrite" in help_text
     assert "--positive-side" in help_text
     assert "--use-frame" in help_text
     assert "--no-visualize" in help_text
@@ -2070,11 +2089,12 @@ def test_canonicalize_help_omits_visualization_options(capsys) -> None:
     assert "--output-formats" not in help_text
 
 
-def test_canonicalize_requires_run_dir_for_public_entrypoint() -> None:
+def test_canonicalize_requires_a_resolvable_run_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     parser = build_parser()
     args = parser.parse_args(["canonicalize"])
 
-    with pytest.raises(ValueError, match="canonicalize requires --run-dir"):
+    with pytest.raises(ValueError, match="No --run-dir given"):
         canonicalize_command(args)
 
 
@@ -3298,6 +3318,24 @@ def test_select_random_mode_records_policy_and_is_reproducible(tmp_path) -> None
     assert payload["random_fraction"] == 0.67
     assert payload["random_seed"] == 7
     assert payload["random_candidate_count"] == 3
+    assert summary["random_seed_source"] == "user"
+
+
+def test_select_random_mode_without_seed_records_the_generated_seed(tmp_path) -> None:
+    run_dir = _make_select_run_bundle(tmp_path)
+    parser = build_parser()
+    base = ["select", "--run-dir", str(run_dir), "--mode", "random", "--fraction", "0.67"]
+    select_command(parser.parse_args([*base, "--selection-id", "unseeded"]))
+    summary = json.loads((run_dir / "selections" / "unseeded" / "selection_summary.json").read_text())
+    payload = json.loads((run_dir / "selections" / "unseeded" / "selection.json").read_text())
+    assert isinstance(payload["random_seed"], int)
+    assert summary["random_seed"] == payload["random_seed"]
+    assert summary["random_seed_source"] == "generated"
+
+    # Re-running with the recorded seed reproduces the selection exactly.
+    select_command(parser.parse_args([*base, "--seed", str(payload["random_seed"]), "--selection-id", "replay"]))
+    read = lambda name: (run_dir / "selections" / name / "selected_particle_keys.csv").read_text()  # noqa: E731
+    assert read("unseeded") == read("replay")
 
 
 def test_select_random_mode_rejects_invalid_fraction(tmp_path) -> None:
@@ -3942,7 +3980,7 @@ def test_select_canonical_space_fails_without_canonical_coordinates(tmp_path) ->
         ]
     )
 
-    with pytest.raises(ValueError, match="canonical_landscape"):
+    with pytest.raises(ValueError, match="has no canonical frame yet"):
         select_command(args)
 
 
@@ -4230,3 +4268,102 @@ def test_select_complete_help_examples_write_standard_artifacts(tmp_path, capsys
     assert captured.out.strip() == str(run_dir / "selections" if split else paths[0])
     with pytest.raises(FileExistsError, match="Choose another --selection-id"):
         select_command(args)
+
+
+def test_row_aligned_pairs_by_row_without_comparing_names(tmp_path) -> None:
+    """--row-aligned is a user assertion: names may differ (e.g. after signal subtraction)."""
+
+    import json as _json
+
+    def _star(path, names, offset):
+        rows = [
+            f"{name} {10 * i + offset * (i % 3)} {20 + i + offset * (i % 2)} {30 + 2 * i}"
+            for i, name in enumerate(names)
+        ]
+        path.write_text(
+            "\n".join(["data_particles", "loop_", "_rlnImageName #1", "_rlnAngleRot #2",
+                       "_rlnAngleTilt #3", "_rlnAnglePsi #4", *rows, ""]),
+            encoding="utf-8",
+        )
+
+    ref, mov = tmp_path / "ref.star", tmp_path / "mov.star"
+    _star(ref, [f"{i}@orig.mrcs" for i in range(1, 7)], 0)
+    # Same particle order, but names differ and are even permuted relative to ref.
+    _star(mov, [f"{i}@subtracted.mrcs" for i in (2, 1, 3, 4, 6, 5)], 5)
+    out = tmp_path / "out"
+    args = build_parser().parse_args([
+        "run", "--ref", str(ref), "--mov", str(mov), "--output-dir", str(out),
+        "--k-neighbors", "2", "--no-visualize", "--row-aligned",
+    ])
+    assert run_command(args) == 0
+    summary = _json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["matched_count"] == 6
+    assert summary["matched_rows_reordered"] is False
+    assert not any("ROW_ALIGNED" in str(w) for w in summary["match_warnings"])
+
+
+def test_omitted_run_dir_and_ids_are_resolved_printed_and_recorded(tmp_path, monkeypatch, capsys) -> None:
+    parser = build_parser()
+    run_command(
+        parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(tmp_path / "cryorole_outputs")]),
+        runner=FakeRunner(),
+    )
+    monkeypatch.chdir(tmp_path)
+    capsys.readouterr()
+
+    assert canonicalize_command(parser.parse_args(["canonicalize", "--canonical-id", "frame_a", "--no-visualize"])) == 0
+    err = capsys.readouterr().err
+    assert "using --run-dir cryorole_outputs (./cryorole_outputs is the default run output)" in err
+    summary = json.loads((tmp_path / "cryorole_outputs" / "canonical" / "frame_a" / "canonicalize_summary.json").read_text())
+    assert summary["resolved_by"]["run_dir"] == {"value": "cryorole_outputs", "resolved_by": "default_output_dir"}
+
+    select_args = parser.parse_args(
+        ["select", "--selection-id", "sel", "--space", "canonical", "--center", "0", "0", "0", "--radius", "180"]
+    )
+    assert select_command(select_args) == 0
+    err = capsys.readouterr().err
+    assert "using --canonical-id frame_a (it is the only one in this run bundle)" in err
+    selection_summary = json.loads(
+        (tmp_path / "cryorole_outputs" / "selections" / "sel" / "selection_summary.json").read_text()
+    )
+    assert selection_summary["canonical_id"] == "frame_a"
+    assert selection_summary["resolved_by"]["canonical_id"]["resolved_by"] == "only_candidate"
+
+    # A raw-space selection in a bundle with a canonical frame gets a notice.
+    raw_args = parser.parse_args(["select", "--selection-id", "sel_raw", "--center", "0", "0", "0", "--radius", "180"])
+    assert select_command(raw_args) == 0
+    assert "selecting in raw space; this bundle also has canonical frame(s) frame_a" in capsys.readouterr().err
+    # ...but not when --space raw was given explicitly.
+    explicit_raw = parser.parse_args(
+        ["select", "--selection-id", "sel_raw2", "--space", "raw", "--center", "0", "0", "0", "--radius", "180"]
+    )
+    assert select_command(explicit_raw) == 0
+    assert "selecting in raw space" not in capsys.readouterr().err
+
+    # Two frames: an omitted --canonical-id is refused with the candidates listed.
+    assert canonicalize_command(parser.parse_args(["canonicalize", "--canonical-id", "frame_b", "--no-visualize"])) == 0
+    with pytest.raises(ValueError, match="2 canonical frames: frame_a, frame_b"):
+        select_command(parser.parse_args(
+            ["select", "--selection-id", "sel2", "--space", "canonical", "--center", "0", "0", "0", "--radius", "180"]
+        ))
+
+
+def test_status_and_next_exit_nonzero_for_unusable_bundles(tmp_path, capsys) -> None:
+    parser = build_parser()
+    missing = tmp_path / "missing"
+    assert status_command(parser.parse_args(["status", "--run-dir", str(missing)])) == 3
+    capsys.readouterr()
+    assert next_command(parser.parse_args(["next", "--run-dir", str(missing), "--json"])) == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"]["bundle_status"] == "missing"
+
+    run_dir = tmp_path / "run"
+    run_command(
+        parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(run_dir)]),
+        runner=FakeRunner(),
+    )
+    assert status_command(parser.parse_args(["status", "--run-dir", str(run_dir)])) == 0
+    assert next_command(parser.parse_args(["next", "--run-dir", str(run_dir)])) == 0
+
+    (run_dir / ".cryorole_bundle_complete").unlink()
+    assert status_command(parser.parse_args(["status", "--run-dir", str(run_dir)])) == 3

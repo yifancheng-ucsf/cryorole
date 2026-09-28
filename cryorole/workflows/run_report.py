@@ -43,6 +43,7 @@ def _render_run_report(request: RunReportRequest) -> str:
         f"- Moving: `{summary.get('input_paths', {}).get('mov')}` ({summary.get('source_types', {}).get('mov')})",
         f"- Policy: `{summary.get('match_key')}`; reordered={summary.get('matched_rows_reordered')}",
         f"- Dropped: ref={summary.get('dropped_ref_only_count')}, mov={summary.get('dropped_mov_only_count')}",
+        *_alignment_lines(summary.get("alignment_provenance")),
         "",
         "## Analysis",
         "",
@@ -50,6 +51,7 @@ def _render_run_report(request: RunReportRequest) -> str:
         f"- Euler convention: `{summary.get('euler_convention')}`",
         f"- SLD: `{summary.get('resolved_sld_metric')}`, k={summary.get('k_neighbors')}",
         "",
+        *_input_sanity_lines(summary.get("input_sanity")),
         "## Core files",
         "",
         "- `data/raw_landscape.npz` — machine-readable landscape",
@@ -85,6 +87,22 @@ def _render_run_report(request: RunReportRequest) -> str:
             f">100={density.n_high_sld_points}/{density.n_points}, "
             f"distance-floored={density.n_floored_points}/{density.n_points}."
         )
+        if density.n_inf_sld_unfloored:
+            lines.extend(
+                [
+                    "",
+                    f"{density.n_inf_sld_unfloored}/{density.n_points} particles have all of their "
+                    f"k={density.effective_k_neighbors} nearest neighbours at exactly the same relative "
+                    "orientation, so their unfloored SLD (`sld_unfloored`) is +inf. "
+                    + (
+                        "`sld_raw` stays finite for them because of the distance floor. "
+                        if not density.n_inf_sld_raw
+                        else f"{density.n_inf_sld_raw} of them also have +inf `sld_raw`. "
+                    )
+                    + "This usually means duplicated particles, symmetry expansion, or a rigid "
+                    "subpopulation larger than k.",
+                ]
+            )
         diagnostic = density.ro_coordinate_diagnostics
         if diagnostic and diagnostic["severity"] == "info":
             lines.extend(["", str(diagnostic["message"])])
@@ -108,3 +126,50 @@ def _render_run_report(request: RunReportRequest) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _input_sanity_lines(sanity: Mapping[str, Any] | None) -> list[str]:
+    if not sanity:
+        return []
+    lines = ["## Input sanity", ""]
+    summary = sanity.get("ro_angle_summary") or {}
+    if summary.get("message"):
+        lines.append(str(summary["message"]))
+    findings = list(sanity.get("findings") or ())
+    if findings:
+        lines.append("")
+        for finding in findings:
+            label = "STRONG WARNING" if finding.get("level") == "strong_warning" else "WARNING"
+            lines.append(f"- **{label}** [{finding.get('code')}] {finding.get('message')}")
+    else:
+        lines.extend(["", "No input-sanity warnings (thresholds are heuristics recorded in `run_summary.json`)."])
+    lines.append("")
+    return lines
+
+
+def _alignment_lines(provenance: Mapping[str, Any] | None) -> list[str]:
+    if not provenance:
+        return []
+    if not provenance.get("attached"):
+        return [f"- Alignment lineage: not attached ({provenance.get('reason')})"]
+    lineage = provenance.get("lineage") or {}
+    states = provenance.get("original_files") or {}
+    status = ", ".join(f"{k} {v.get('status')}" for k, v in states.items())
+    lines = [f"- Alignment lineage: `{lineage.get('strategy')}` from `{provenance.get('align_report')}` (originals: {status})"]
+    coverage = lineage.get("coverage") or {}
+    if coverage and coverage.get("label") != "full":
+        lines.append(
+            f"- **Matchable subset:** {coverage.get('paired')} of {coverage.get('ref_rows')} ref rows "
+            f"({coverage.get('ref_fraction', 0):.1%}) were paired by `cryorole align`. This landscape covers only that "
+            "subset; it is neither the full data nor a deduplicated dataset."
+        )
+    groups = lineage.get("suspected_duplicate_groups") or {}
+    if groups:
+        excluded = groups.get("rows_excluded_from_geometric_matching", {})
+        excess = groups.get("rows_in_excess_if_each_group_is_one_particle", {})
+        lines.append(
+            f"- Suspected duplicate groups: {groups.get('groups')} groups; {excluded.get('ref')} rows per side excluded "
+            f"from geometric matching; {excess.get('ref')} rows would be in excess if each group is one particle "
+            "(not confirmed; nothing was removed)."
+        )
+    return lines

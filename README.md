@@ -4,12 +4,13 @@
 
 cryoROLE (cryo-EM Relative Orientation LandscapE) compares the per-particle orientations of two separately refined, approximately rigid domains. Start with CryoSPARC `.cs` or RELION `.star` metadata; obtain a relative-orientation landscape, plots, and selected metadata for downstream refinement or reconstruction.
 
-The public interface is the `cryorole` command. The current package version is `2.0.0a1` (pre-release).
+The public interface is the `cryorole` command; the same steps are available from Python through `cryorole.api`. The current package version is `2.0.0a1` (pre-release).
 
 [Get started](#your-first-analysis) · [Visualize](#visualize-create-and-customize-plots) · [Select](#select-save-particle-subsets) · [Find outputs](#find-your-results) · [Help](#common-questions)
 
 ## Contents
 
+- [What's new](#whats-new)
 - [What can I do with cryoROLE?](#what-can-i-do-with-cryorole)
 - [Before you start](#before-you-start)
 - [Install](#install)
@@ -19,6 +20,19 @@ The public interface is the `cryorole` command. The current package version is `
 - [Common questions](#common-questions)
 - [Advanced workflows and documentation](#advanced-workflows-and-documentation)
 - [Citation](#citation) and [license](#license)
+
+## What's new
+
+This update changes how CryoSPARC poses are read, adds tools for RELION inputs that do not match directly, and makes the command line easier to use.
+
+- **CryoSPARC pose convention (please re-run `.cs` analyses).** `alignments3D/pose` is now read the same way as pyem `csparc2star.py`, so a `.cs` input and the same particles converted to STAR give the same relative orientations. Runs made with earlier versions from `.cs` files have the same RO angles but different RO axes; re-run them. RELION `.star` inputs are unchanged. See the [CryoSPARC workflow](docs/cryosparc_workflow.md).
+- **`cryorole align` for RELION.** Pairs particles when default matching fails, for example after signal subtraction or re-extraction: explicit key pairs (`--key-pair`), exact matching of recentred re-extractions (`--coordinate-match recentered-exact`), and chains of jobs. `--fix-subtract-coordinates` writes a verified copy of a recentred subtraction with corrected coordinates. `preflight` suggests the right command. See the [RELION workflow](docs/relion_workflow.md#preparing-aligned-star-files).
+- **Input sanity checks.** `preflight` blocks when `--ref` and `--mov` are the same file, and every run reports a relative-orientation angle summary with warnings for identical or nearly identical poses.
+- **Shorter commands and clearer errors.** `--run-dir`, `--canonical-id` and, for `export`, `--selection-id` can be omitted when there is only one candidate. Errors end with a `what to do:` line. `cryorole --version` works, and `COMMAND --help` ends with examples. See [Common behaviour](docs/cli_reference.md#common-behaviour).
+- **Python API.** `from cryorole import api` gives typed functions for every step, with progress reporting and cancellation. See [Python API](docs/python_api.md).
+- **Reproducible random selections.** A random selection without `--seed` now records the seed it used.
+
+Tutorial datasets (two CryoSPARC `.cs` examples and a RELION `.star` example) will be published separately.
 
 ## What can I do with cryoROLE?
 
@@ -30,6 +44,8 @@ The public interface is the `cryorole` command. The current package version is `
 | Preview a region interactively and confirm a particle subset | `explore` |
 | Save subsets by orientation, SLD, coordinate range, random sampling, or source metadata | `select` |
 | Export the selected original metadata for CryoSPARC or RELION | `export` |
+| Pair RELION STAR files that do not match directly (subtraction, re-extraction) | `align` |
+| Script any of the above from Python or a notebook | `cryorole.api` |
 
 cryoROLE starts from existing domain-specific pose estimates. It does not perform the domain refinements or reconstruct maps. Its relative orientation is `RO = R_ref^-1 R_mov`. SLD summarizes local sampling density in the orientation landscape; higher SLD indicates more densely sampled regions under the recorded density policy.
 
@@ -112,6 +128,8 @@ my_run/exports/region_01/mov/selected_mov.cs
 
 These are metadata subsets for downstream CryoSPARC use. Export preserves source poses and does not modify the original files. See the [CryoSPARC workflow](docs/cryosparc_workflow.md) for more details.
 
+**Shorter commands.** If you run commands from inside `my_run`, or used the default output directory `cryorole_outputs`, you can leave out `--run-dir`. Likewise `--canonical-id` and, for `export`, `--selection-id` can be left out when the bundle has only one. cryoROLE prints what it used and records it in the report; when there is more than one candidate it lists them and asks you to choose. See [Common behaviour](docs/cli_reference.md#common-behaviour).
+
 ### Using RELION STAR instead
 
 Replace the first two commands with the following, then follow the same inspection, selection, and export steps. This is an alternative start: use a fresh `my_run` directory if you already ran the CryoSPARC example.
@@ -121,7 +139,7 @@ cryorole preflight --ref ref_domain.star --mov mov_domain.star
 cryorole run --ref ref_domain.star --mov mov_domain.star --output-dir my_run
 ```
 
-Automatic export will produce `.star` subsets. If matching is blocked, inspect the reported identity issue and consult the [RELION workflow](docs/relion_workflow.md) before proceeding.
+Automatic export will produce `.star` subsets. If matching is blocked (for example after signal subtraction or re-extraction changed the particle names), `preflight` lists candidate keys and prints an explicit `cryorole align` command; see the [RELION workflow](docs/relion_workflow.md#preparing-aligned-star-files).
 
 ## Explore the workflow
 
@@ -348,6 +366,10 @@ No. The diagnostic counts rows sharing quantized RO rotation-vector coordinates 
 
 These thresholds are diagnostic heuristics, not scientific cutoffs. Coordinate coincidence alone establishes neither duplicate particle identity nor duplicate images. Existing identity/matching diagnostics handle their own evidence and failures. The RO diagnostic does not remove particles or change SLD.
 
+### Why are the coordinates of my subtracted particles wrong?
+
+RELION's Particle subtraction with recentring (`--center_x/y/z`) moves each box but does not update `_rlnCoordinateX/Y`, so the subtracted STAR places particles up to the projected recentring shift away from their true centre (a median of 92 px in our test data). Refinement is not affected. Re-extraction, polishing, distance-based duplicate removal and coordinate matching are affected. `cryorole preflight` warns about it, and `cryorole align --fix-subtract-coordinates Subtract/jobNNN/` writes a verified, corrected copy without changing your files. See the [RELION workflow](docs/relion_workflow.md#signal-subtraction-with-recentring-leaves-stale-coordinates).
+
 ### Why does an older 3D HTML open blank?
 
 Older generated files can contain a JavaScript newline-escaping error. Regenerate the viewer with the updated code and a new `--visual-id`; existing HTML files are not repaired automatically. Generated-script and simulated interaction tests pass, but actual Chrome rendering and interaction acceptance for this fix remains pending. See [FAQ](docs/faq.md) for troubleshooting.
@@ -360,6 +382,7 @@ Older generated files can contain a JavaScript newline-escaping error. Regenerat
 | RELION input, matching, and optional `align` preparation | [RELION workflow](docs/relion_workflow.md) |
 | Resume work, inspect status, or get next-step guidance | [Workflow tutorial: `status`, `next`, `guide`, `explore`](docs/workflow_ux.md) |
 | Look up command arguments | [CLI reference](docs/cli_reference.md) and `cryorole COMMAND --help` |
+| Use cryoROLE from Python (notebooks, scripts, a GUI) | [Python API](docs/python_api.md) |
 | Inspect landscape CSVs in ChimeraX | [Standalone viewer](cryorole_chimerax_viewer.py): its opening documentation gives setup and commands |
 | Render landscape/rigid-body movies or canonical camera views | [Animation and canonical-views guide](docs/animation_export.md); structure execution requires ChimeraX, MP4 encoding additionally requires FFmpeg/FFprobe |
 | Apply a diagnostic rotation to a derived landscape | [Rotation script](scripts/rotate_landscape.py), with usage through `--help` |

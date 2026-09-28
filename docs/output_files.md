@@ -47,6 +47,41 @@ matching, resolved policies, and important output paths.
 Provides a short human guide to the run outputs, quick-look figures, warnings,
 and next commands. JSON reports and the manifest remain authoritative.
 
+### Input sanity
+
+Every run reports the RO-angle distribution (median, 90th and 99th percentile)
+in `run_report.md` under "Input sanity" and in `run_summary.json` under
+`input_sanity`. Warnings appear only for patterns that usually mean an input
+mistake; the thresholds are heuristics and are recorded in
+`input_sanity.policy`. They never change the analysis.
+
+| Code | Level | Trigger |
+| --- | --- | --- |
+| `SAME_INPUT_FILE` | strong warning (blocked in `preflight`) | `--ref` and `--mov` resolve to the same path or have the same SHA-256 |
+| `IDENTICAL_POSES` | strong warning | at least 99% of particles have an RO angle below 1e-6 rad |
+| `NEARLY_IDENTICAL_ORIENTATIONS` | warning | median RO angle below 1° and 99th percentile below 2° |
+
+The summary also reports the fractions below 0.1°, 0.5°, 1° and 5° and the
+histogram mode. The findings are prompts to inspect the inputs, not a
+conclusion that the pairing is wrong: stable domains can have small relative
+rotations.
+
+### Alignment lineage (`--row-aligned` runs)
+
+`run_summary.json` and `run_manifest.json` (`results.alignment_provenance`)
+record the `cryorole align` lineage when an `align_report.json` next to the
+inputs verifies. The record has these fields:
+- `attached`;
+- `lineage`: strategy, original paths and hashes, match table;
+- `original_files`: `verified`, `unavailable` or `mismatch` for each original.
+
+When the report cannot be verified, `attached` is `false` and `reason` says why.
+The field is `null` when no report is found. This never affects the run.
+
+If every particle has the same RO, the local density is undefined and `run`
+stops before writing a landscape, with the input-sanity explanation as the
+error message.
+
 New summaries and manifests share a unique `run_id` and a ref/mov
 `source_identities` mapping containing the original path, run-resolved absolute
 path, source type, file size, mtime, streamed SHA-256, and source row count.
@@ -147,6 +182,24 @@ canonical_frame.npz
 Canonicalization derives a coordinate frame and writes new artifacts. It does
 not overwrite raw landscape artifacts.
 
+## Resolved options (`resolved_by`)
+
+When `--run-dir`, `--canonical-id` or `--selection-id` is omitted and cryoROLE
+fills it in (see `docs/cli_reference.md`, Common behaviour), the report written
+by that command records how, for example:
+
+```json
+"resolved_by": {
+  "run_dir": {"value": "cryorole_outputs", "resolved_by": "default_output_dir"},
+  "canonical_id": {"value": "default", "resolved_by": "only_candidate"}
+}
+```
+
+`resolved_by` is `explicit`, `current_directory`, `default_output_dir` or
+`only_candidate`. It appears in `canonicalize_summary.json`,
+`selection_summary.json`, `visualization_report.json`, the export
+`export_report.json`, and the `status` / `next` JSON output.
+
 ## Selections
 
 Selections live under:
@@ -167,6 +220,10 @@ selection_summary.json
 
 A selection is a scientific decision artifact. It is not the same thing as a
 visualization filter.
+
+Random-mode selections always record the seed used: `random_seed` in
+`selection.json` and `selection_summary.json`, with `random_seed_source`
+(`user` for `--seed`, `generated` when it was omitted) in the summary.
 
 CLI select and interactive Confirm use the same standard artifact writer for
 these five files. `selected_landscape_rows.csv` retains ref/mov source-row IDs
@@ -194,7 +251,11 @@ rewrite source poses with display/canonical coordinates.
 
 Before subset writing, export verifies the current source against the recorded
 SHA-256. `export_report.json` records per-domain verification and relocation
-status. A missing original can be replaced only with explicit
+status. Export also checks that the source particle table still has the row
+count the run recorded (`source_row_count_verified` in each domain report) and
+refuses to export on a mismatch. STAR subsets always come from the loop in the
+`data_particles` block; other blocks (optics, tomograms) are copied verbatim.
+A missing original can be replaced only with explicit
 `--relocated-ref` / `--relocated-mov` whose hash matches. Legacy bundles without
 hashes require `--allow-unverified-source`, and that decision is recorded.
 
@@ -204,9 +265,6 @@ hashes require `--allow-unverified-source`, and that decision is recorded.
   truth.
 - CSV: user-facing flat tables.
 - JSON: reports, summaries, manifests, policies, and provenance.
-
-Full landscape JSON is debug-only and opt-in. `landscape.json` is not the
-default production landscape; use `data/raw_landscape.npz` for cryoROLE commands.
 
 ## Derived Coordinate Conventions
 
@@ -223,6 +281,15 @@ record the resolved Euler convention.
 
 The scientific SLD density value used by default selection and canonicalization
 policies.
+
+`sld_unfloored`
+
+SLD without the distance floor. A particle whose k nearest neighbours all have
+exactly its RO (for example duplicated particles, symmetry expansion, or a rigid
+subpopulation larger than k) has zero local distance and `+inf` here; the count
+is `n_inf_sld_unfloored` in `reports/density_report.json` and is explained in
+`run_report.md`. `sld_raw` stays finite because of the distance floor. NaN is
+never a valid SLD value.
 
 `sld_display`
 

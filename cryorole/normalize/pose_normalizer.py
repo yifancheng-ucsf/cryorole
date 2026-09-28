@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.spatial.transform import Rotation
 
+from cryorole.models.policies import ConventionPolicy
 from cryorole.models.pose_table import PoseTable
 from cryorole.normalize.conventions import ConventionResolver
 from cryorole.normalize.field_mapper import (
@@ -65,8 +65,11 @@ class PoseNormalizer:
         domain_name: str,
         pose_field: str = CRYOSPARC_POSE_FIELD,
         shift_field: str = CRYOSPARC_SHIFT_FIELD,
+        convention_resolver: ConventionResolver | None = None,
     ) -> PoseTable:
         """Normalize native CryoSPARC .cs rotvec poses into active matrices."""
+
+        resolver = convention_resolver or ConventionResolver(ConventionPolicy.cryosparc_default())
 
         require_columns(
             particles,
@@ -96,7 +99,7 @@ class PoseNormalizer:
                 {
                     "particle_key": None,
                     "domain_name": domain_name,
-                    "rotation_matrix_active": Rotation.from_rotvec(rotvec).as_matrix(),
+                    "rotation_matrix_active": resolver.rotvec_to_active_matrices(rotvec[None, :])[0],
                     "shift_xy": shift_xy,
                     "source_type": "cryosparc",
                     "source_row_id": source_row_id_int,

@@ -54,16 +54,36 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the cryoROLE CLI."""
+    """Run the cryoROLE CLI.
+
+    Expected problems are printed as ``cryorole: error: <message>`` plus a
+    ``what to do:`` line and exit with status 2. Ctrl-C exits with 130.
+    Unexpected errors print a short report (exit 1); set ``CRYOROLE_DEBUG=1``
+    to see the traceback instead.
+    """
+
+    import os
+
+    from cryorole.errors import classify_exception
+    from cryorole.logs import configure_cli_logging
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    configure_cli_logging(quiet=bool(getattr(args, "quiet", False)))
     try:
         return args.handler(args)
-    except NotImplementedError as exc:
-        parser.exit(2, f"cryorole: {exc}\n")
-    except (ValueError, FileExistsError, FileNotFoundError, IsADirectoryError, RuntimeError) as exc:
-        parser.exit(2, f"cryorole: error: {exc}\n")
+    except KeyboardInterrupt:
+        parser.exit(130, "cryorole: interrupted; nothing further was written.\n")
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the CLI boundary reports every failure cleanly
+        if os.environ.get("CRYOROLE_DEBUG"):
+            raise
+        error = classify_exception(exc)
+        text = f"cryorole: error: {error.message}\n"
+        if error.remedy:
+            text += f"  what to do: {error.remedy}\n"
+        parser.exit(1 if error.code == "internal" else 2, text)
     return 0
 
 

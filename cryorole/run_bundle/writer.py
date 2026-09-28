@@ -130,6 +130,13 @@ class RunBundleWriter:
 
         if self.work_dir is None or not self.work_dir.exists():
             return None
+        from cryorole.errors import CancelledError
+
+        if isinstance(error, CancelledError):
+            # A caller-requested cancel is not a failure to debug: discard staging.
+            shutil.rmtree(self.work_dir, ignore_errors=True)
+            self.work_dir = None
+            return None
         try:
             self.set_state("failed", detail=f"{type(error).__name__}: {error}")
             self._write_json(

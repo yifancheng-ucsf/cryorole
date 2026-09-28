@@ -613,3 +613,54 @@ def test_rotvec_euclidean_query_batch_size_bounds_each_tree_query(monkeypatch):
     )
 
     assert query_sizes == [3, 3, 3, 1]
+
+
+@pytest.mark.parametrize("sld_metric", ["rotvec_euclidean", "so3_geodesic"])
+@pytest.mark.parametrize("distance_floor_fraction", [1e-4, 0.0])
+def test_array_native_density_accepts_inf_sld_for_more_than_k_identical_ros(
+    sld_metric, distance_floor_fraction
+) -> None:
+    """P0-3: >k identical ROs give +inf unfloored SLD, which is reported, not fatal."""
+
+    from cryorole.core.density import compute_landscape_density_arrays
+
+    rng = np.random.default_rng(0)
+    coords = np.vstack([np.tile([0.1, 0.2, 0.3], (60, 1)), rng.normal(0.0, 0.3, (100, 3))])
+    n = len(coords)
+    policy = DensityPolicy(
+        k_neighbors=50, sld_metric=sld_metric, distance_floor_fraction=distance_floor_fraction
+    )
+
+    arrays, report = compute_landscape_density_arrays(
+        np.arange(n).astype(str), coords, np.arange(n), np.arange(n), policy=policy
+    )
+
+    assert report.n_inf_sld_unfloored == 60
+    assert np.isposinf(arrays.sld_unfloored[:60]).all()
+    assert not np.isnan(arrays.sld_raw).any()
+    assert report.n_inf_sld_raw == (60 if distance_floor_fraction == 0.0 else 0)
+
+
+def test_landscape_arrays_accept_posinf_sld_but_reject_nan_and_neginf() -> None:
+    from cryorole.models.landscape_arrays import LandscapeArrays
+
+    def build(sld_unfloored):
+        n = 3
+        return LandscapeArrays(
+            particle_key=np.array(["a", "b", "c"]),
+            coordinates_analysis=np.zeros((n, 3)),
+            coordinates_display=None,
+            sld_unfloored=sld_unfloored,
+            sld_raw=np.ones(n),
+            sld_display=np.ones(n),
+            sld_was_floored=np.zeros(n, dtype=bool),
+            sld_local_k_mean=np.ones(n),
+            sld_effective_local_k_mean=np.ones(n),
+            sld_distance_floor=np.zeros(n),
+        )
+
+    assert np.isposinf(build(np.array([1.0, np.inf, 2.0])).sld_unfloored).sum() == 1
+    with pytest.raises(ValueError, match="NaN or -inf"):
+        build(np.array([1.0, np.nan, 2.0]))
+    with pytest.raises(ValueError, match="NaN or -inf"):
+        build(np.array([1.0, -np.inf, 2.0]))

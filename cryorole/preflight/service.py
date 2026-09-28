@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 from typing import Any
 
+from cryorole.core.input_sanity import same_input_file
 from cryorole.export.serialization import to_json_safe
 from cryorole.models.policies import ConventionPolicy
 from cryorole.preflight.report import PREFLIGHT_SCHEMA_VERSION, PreflightResult
@@ -40,6 +41,12 @@ class PreflightRequest:
     identity_columns: tuple[str, ...] = ()
     mapping_file: str | Path | None = None
     resolved_input_policies: ResolvedInputPolicies | None = None
+    # "block": same ref/mov file is a preflight error (public ``preflight`` and
+    # ``run --dry-run``). "warn": recorded as a strong warning (production run).
+    same_file_policy: str = "block"
+    # Machine checks (versions, writable output, memory). Off inside a run,
+    # whose own staging directory already exists.
+    check_environment: bool = True
 
 
 def run_preflight(
@@ -59,6 +66,7 @@ def run_preflight(
     identity_reports: dict[str, object] = {}
     matching: dict[str, object] = {}
     conventions: dict[str, object] = {}
+    input_sanity: dict[str, object] = {"same_file": None}
     resolved = request.resolved_input_policies
 
     try:
@@ -82,6 +90,17 @@ def run_preflight(
                     source_type=source_types[domain],
                     row_count=-1,
                 ).to_dict()
+        same_file = same_input_file(
+            identities.get("ref"),
+            identities.get("mov"),
+            ref_path=request.ref,
+            mov_path=request.mov,
+        )
+        if same_file is not None:
+            input_sanity["same_file"] = same_file
+            if request.same_file_policy == "block":
+                raise ValueError(same_file["message"])
+            warnings.append(f"[{same_file['code']}] {same_file['message']}")
         ref_policy = resolved.identity_ref
         mov_policy = resolved.identity_mov
         conventions = {
@@ -160,6 +179,19 @@ def run_preflight(
         except (ValueError, FileNotFoundError, OSError, KeyError):
             pass
 
+    align_diagnosis = None
+    if source_types.get("ref") == "relion" and source_types.get("mov") == "relion":
+        try:
+            from cryorole.preflight.align_diagnosis import diagnose_star_matching, stale_subtraction_warnings
+
+            for finding in stale_subtraction_warnings((request.ref, request.mov)):
+                warnings.append(f"[{finding['code']}] {finding['message']}")
+            overlap = float(matching.get("overlap_smaller_input", 0.0) or 0.0)
+            if not request.row_aligned and (errors or overlap < 0.5):
+                align_diagnosis = diagnose_star_matching(request.ref, request.mov)
+        except (ValueError, FileNotFoundError, OSError, KeyError) as exc:
+            align_diagnosis = {"error": f"align diagnosis unavailable: {exc}"}
+
     matched_count = int(matching.get("matched_count", 0))
     resource = estimate_run_resources(
         matched_count=matched_count,
@@ -173,6 +205,17 @@ def run_preflight(
         errors.append("Estimated output exceeds available disk space with the 20% safety margin")
     if resource["recommend_no_visualize"] and request.visualize:
         warnings.append("large_input_consider_--no-visualize")
+    environment = None
+    if request.check_environment:
+        from cryorole.preflight.environment import check_environment
+
+        env_check = check_environment(
+            request.output_dir,
+            estimated_peak_memory_bytes=int(resource["estimated_peak_memory_bytes"]),
+        )
+        environment = env_check["environment"]
+        errors.extend(env_check["errors"])
+        warnings.extend(env_check["warnings"])
     readiness = "BLOCKED" if errors else ("READY_WITH_WARNINGS" if warnings else "READY")
     resolved_command = _resolved_run_command(request)
     report: dict[str, Any] = {
@@ -198,6 +241,8 @@ def run_preflight(
         ),
         "identity_reports": identity_reports,
         "matching": matching,
+        "input_sanity": input_sanity,
+        "align_diagnosis": align_diagnosis,
         "run_policy": {
             "resolved_backend": "array_native" if request.run_backend == "auto" else request.run_backend,
             "k_neighbors": request.k_neighbors,
@@ -207,10 +252,15 @@ def run_preflight(
             "visualize": request.visualize,
         },
         "resource_estimate": resource,
+        "environment": environment,
         "warnings": warnings,
         "errors": errors,
         "resolved_run_command": resolved_command,
-        "recommended_next_command": _next_command(readiness, errors, request, resolved_command),
+        "recommended_next_command": (
+            align_diagnosis["recommended_command"]
+            if readiness == "BLOCKED" and align_diagnosis and align_diagnosis.get("recommended_command")
+            else _next_command(readiness, errors, request, resolved_command)
+        ),
     }
     return PreflightResult(
         report=report,
@@ -223,10 +273,10 @@ def _convention_record(source_type: str) -> dict[str, object]:
     if source_type == "relion":
         return asdict(ConventionPolicy.relion_default())
     return {
-        "source_software": "cryosparc",
+        **asdict(ConventionPolicy.cryosparc_default()),
         "pose_field": "alignments3D/pose",
         "pose_encoding": "rotation_vector_axis_angle",
-        "internal_semantics": "active",
+        "reference_implementation": "pyem csparc2star.py: rot2euler(expmap(pose))",
     }
 
 

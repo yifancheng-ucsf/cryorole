@@ -30,8 +30,13 @@ def write_cryosparc_cs_subset(
     row_id_field: str,
     overwrite: bool = False,
     uid_output_path: str | Path | None = None,
+    expected_source_row_count: int | None = None,
 ) -> CsSubsetResult:
-    """Write a native CryoSPARC structured-array subset without changing fields."""
+    """Write a native CryoSPARC structured-array subset without changing fields.
+
+    When ``expected_source_row_count`` (the row count the run recorded for this
+    source) is given, a mismatch fails loudly instead of exporting.
+    """
 
     source = Path(source_path)
     output = Path(output_path)
@@ -43,6 +48,12 @@ def write_cryosparc_cs_subset(
     if array.dtype.names is None:
         raise ValueError("CryoSPARC CS file must be a structured array")
 
+    if expected_source_row_count is not None and len(array) != int(expected_source_row_count):
+        raise ValueError(
+            f"CryoSPARC CS source {source} has {len(array)} rows but the run recorded "
+            f"{int(expected_source_row_count)}; refusing to export. The source file may have been "
+            "replaced, or it is not the file the run used."
+        )
     _validate_row_ids(row_ids, source_row_count=len(array), row_id_field=row_id_field)
     subset = array[np.asarray(row_ids, dtype=np.int64)]
     output.parent.mkdir(parents=True, exist_ok=True)

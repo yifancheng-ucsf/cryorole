@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import secrets
+
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import sys
 from typing import Any, Sequence
 
 import numpy as np
@@ -38,6 +39,7 @@ from cryorole.select.selectors import (
     _coerce_source_row_id as _coerce_cli_source_row_id, _resolve_metadata_column_name,
 )
 from cryorole.workflows.input_policy import resolve_source_type
+from cryorole.logs import warn_user
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,10 @@ class SelectRequest:
     overwrite: bool = False
     euler_convention: str | None = None
     explicit_options: tuple[str, ...] = ()
+    # How omitted --run-dir / --canonical-id were filled in (cryorole.workflow.resolve).
+    resolved_by: dict[str, dict[str, str]] | None = None
+    # "user" or "generated": random mode always records the seed it used.
+    seed_source: str | None = None
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "SelectRequest":
@@ -119,7 +125,8 @@ def _validate_select_request(request: SelectRequest) -> None:
                 option = "--" + name.replace("_", "-")
                 raise ValueError(f"{option} applies only to --mode {owner}; current mode is {mode!r}. Remove it or change --mode.")
     if request.space != "canonical" and (
-        "canonical_id" in request.explicit_options or request.canonical_id != "default"
+        "canonical_id" in request.explicit_options
+        or request.canonical_id not in (None, "default")
     ):
         raise ValueError("--canonical-id requires --space canonical")
     required = {
@@ -154,9 +161,15 @@ def _validate_select_request(request: SelectRequest) -> None:
 def create_selection(request: SelectRequest) -> SelectResult:
     """Load a saved landscape, select particles, and export selection artifacts."""
 
-    args = request
-
     _validate_select_request(request)
+    if request.selection_mode == "random":
+        # Record every seed used: an omitted --seed draws one, so the selection stays reproducible.
+        request = (
+            replace(request, seed_source="user")
+            if request.seed is not None
+            else replace(request, seed=secrets.randbelow(2**31), seed_source="generated")
+        )
+    args = request
     validate_completed_run_bundle(args.run_dir)
     landscape_source = args.run_dir
     landscape_metadata = read_landscape_metadata(
@@ -291,6 +304,7 @@ def _write_selection_outputs(
             "overwrite": bool(args.overwrite),
             "mode": _public_selection_mode(selection.selection_mode),
             "run_dir": str(args.run_dir),
+            "resolved_by": dict(args.resolved_by or {}),
             "parent_space": args.space,
             "canonical_id": args.canonical_id if args.space == "canonical" else None,
             "parent_landscape_path": landscape_metadata["path"],
@@ -304,6 +318,7 @@ def _write_selection_outputs(
             "metric": selection.metric,
             "random_fraction": selection.random_fraction,
             "random_seed": selection.random_seed,
+            "random_seed_source": args.seed_source,
             "random_candidate_count": selection.random_candidate_count,
             "metadata_domain": selection.metadata_domain,
             "metadata_source_file": selection.metadata_source_file,
@@ -927,10 +942,9 @@ def _resolve_landscape_euler_metadata(
     )
     metadata = resolved.metadata(euler_angle_columns=columns)
     if warn_on_legacy_missing:
-        print(
-            "[cryorole] warning: parent landscape lacks Euler convention metadata; "
-            f"defaulting to {DEFAULT_EULER_CONVENTION} for derived Euler coordinates.",
-            file=sys.stderr,
+        warn_user(
+            "parent landscape lacks Euler convention metadata; "
+            f"defaulting to {DEFAULT_EULER_CONVENTION} for derived Euler coordinates."
         )
     return metadata
 

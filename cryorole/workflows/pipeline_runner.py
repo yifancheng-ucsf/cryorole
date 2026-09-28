@@ -121,7 +121,12 @@ class PipelineRunner:
             return raw.particles, "relion", pose
         if suffix == ".cs":
             raw = read_cryosparc_cs(path)
-            pose = self.normalizer.normalize_cryosparc(raw.particles, domain_name=domain_name)
+            resolver = ConventionResolver(convention_policy or ConventionPolicy.cryosparc_default())
+            pose = self.normalizer.normalize_cryosparc(
+                raw.particles,
+                domain_name=domain_name,
+                convention_resolver=resolver,
+            )
             return raw.particles, "cryosparc", pose
         raise ValueError(f"Unsupported input suffix for Phase 1: {suffix}")
 
