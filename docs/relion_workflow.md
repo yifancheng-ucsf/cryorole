@@ -230,6 +230,27 @@ particles. Only after that does it write `…_coords_corrected.star` under
 `cryorole_alignments/`, with a `coordinate_correction_report.json`. The original
 files are never changed.
 
+Safeguards:
+
+- **Only coordinate fields change.** Only `_rlnCoordinateX` and
+  `_rlnCoordinateY` are rewritten, formatted to 6 decimals. Every other byte of
+  each written row is unchanged, including the spacing between fields. One
+  comment line naming the report is added at the top.
+- **Rows are checked before correction.** A row is corrected only if its
+  origins and angles verify and its coordinates still hold the stale value that
+  RELION writes (equal to the subtraction input). Rows that are already
+  corrected or hold unexpected coordinates are left out and listed in
+  `excluded_rows.star`.
+- **A second application is refused.** Running the correction on an
+  already-corrected file stops with "already coordinate-corrected" and writes
+  nothing.
+- **`--apply-to` transfers by identity.** It joins the target rows to verified
+  subtracted rows by `_rlnImageName`, which must be unique. It copies the
+  corrected value computed from the subtraction input; the target's own angles
+  and origins are never used and are left unchanged. A target that already holds
+  the corrected coordinates is refused. Rows without a verified partner, or with
+  coordinates that are neither stale nor corrected, are left out and listed.
+
 ## Canonicalize
 
 ```bash
