@@ -441,6 +441,23 @@ def index_star_particles(
     )
 
 
+def _replace_fields_in_place(line: str, replacements: dict[int, str], *, expected_fields: int) -> str:
+    """Replace whole fields by position, keeping every other byte of the line (spacing included)."""
+
+    spans = [match.span() for match in _QUOTED_FIELDS.finditer(line)]
+    if len(spans) != expected_fields:
+        raise ValueError(f"STAR row has {len(spans)} fields; expected {expected_fields}: {line.strip()[:80]}")
+    pieces = []
+    cursor = 0
+    for position, (start, end) in enumerate(spans):
+        if position in replacements:
+            pieces.append(line[cursor:start])
+            pieces.append(replacements[position])
+            cursor = end
+    pieces.append(line[cursor:])
+    return "".join(pieces)
+
+
 def write_star_particle_subset(
     index: StarParticleIndex,
     row_ids: Sequence[int],
@@ -475,12 +492,12 @@ def write_star_particle_subset(
             source.seek(start)
             raw = source.read(end - start)
             if positions:
-                text = raw.decode("utf-8").rstrip("\r\n")
-                fields = split_star_fields(text.strip())
-                for name, column_index in positions.items():
-                    fields[column_index] = str(replace_columns[name][out_row])
-                raw = (" ".join(fields) + "\n").encode("utf-8")
-            elif not raw.endswith((b"\n", b"\r")):
+                raw = _replace_fields_in_place(
+                    raw.decode("utf-8"),
+                    {column_index: str(replace_columns[name][out_row]) for name, column_index in positions.items()},
+                    expected_fields=len(index.headers),
+                ).encode("utf-8")
+            if not raw.endswith((b"\n", b"\r")):
                 raw += b"\n"
             target.write(raw)
         source.seek(index.suffix_start)

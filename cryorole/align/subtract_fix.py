@@ -18,6 +18,7 @@ corrected. The original files are never modified.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -39,6 +40,7 @@ from cryorole.provenance.source_identity import stream_sha256
 ORIGIN_TOLERANCE_ANGST = 2e-3
 ANGLE_TOLERANCE_DEG = 1e-5
 ACCEPT_FRACTION = 0.99
+COORDINATE_TOLERANCE_PX = 1e-3
 REPORT_NAME = "coordinate_correction_report.json"
 
 _COORDS = ("_rlnCoordinateX", "_rlnCoordinateY")
@@ -169,8 +171,13 @@ def fix_subtract_coordinates(
     origin_ok = origin_error <= ORIGIN_TOLERANCE_ANGST
     angle_ok = angle_error <= ANGLE_TOLERANCE_DEG
     verified = origin_ok & angle_ok
+    input_coords = float_columns(in_index, _COORDS)[in_rows]
+    corrected = prediction.corrected_coordinates
     sub_coords = float_columns(sub_index, _COORDS)
-    stale = np.all(np.isclose(sub_coords, float_columns(in_index, _COORDS)[in_rows], atol=1e-6), axis=1)
+    moved = np.any(np.abs(corrected - input_coords) > COORDINATE_TOLERANCE_PX, axis=1)
+    stale = np.all(np.abs(sub_coords - input_coords) <= COORDINATE_TOLERANCE_PX, axis=1)
+    already = moved & np.all(np.abs(sub_coords - corrected) <= COORDINATE_TOLERANCE_PX, axis=1)
+    other = ~(stale | already)
     fraction = float(verified.mean()) if verified.size else 0.0
     shift = np.linalg.norm(prediction.box_shift_mic, axis=1)
     verification = {
@@ -180,6 +187,12 @@ def fix_subtract_coordinates(
         "origin_mismatch_rows": int((~origin_ok).sum()),
         "angle_mismatch_rows": int((~angle_ok).sum()),
         "max_origin_error_angst": float(origin_error[verified].max()) if verified.any() else None,
+        "coordinate_state": {
+            "stale_rows": int(stale.sum()),
+            "already_corrected_rows": int(already.sum()),
+            "unexpected_rows": int(other.sum()),
+            "zero_shift_rows": int((~moved).sum()),
+        },
         "stale_coordinate_rows": int(stale.sum()),
         "shift_px_percentiles": {
             "p50": float(np.percentile(shift, 50)), "p99": float(np.percentile(shift, 99)), "max": float(shift.max())
@@ -193,6 +206,7 @@ def fix_subtract_coordinates(
         "matrix": "RELION Euler_angles2matrix(rot, tilt, psi, A, false) of the subtraction input",
         "rounding": "RELION ROUND (half away from zero), particle pixels",
         "correction": "c_corrected = c_input - ROUND(offset_particle_px) * a_part / a_mic",
+        "changed_columns": list(_COORDS),
     }
     log("cryoROLE subtract-coordinate correction")
     for key, value in sources.items():
@@ -209,66 +223,102 @@ def fix_subtract_coordinates(
             f"mismatches {verification['angle_mismatch_rows']}. Check --center, --model-angpix, --subtract-input. "
             "Nothing was written."
         )
-
-    out_dir = Path(output_dir) if output_dir is not None else _default_output_dir(job_dir)
-    if out_dir.exists() and any(out_dir.iterdir()) and not overwrite:
-        raise FileExistsError(f"Output directory already exists: {out_dir}. Use --overwrite or choose --output-dir.")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    corrected = prediction.corrected_coordinates
     formatted = [[f"{value:.6f}" for value in column] for column in corrected.T]
-    verified_rows = np.flatnonzero(verified)
-    unverified_rows = np.flatnonzero(~verified)
     comment = f"cryoROLE subtract-coordinate correction; report: {REPORT_NAME}"
     outputs: dict[str, str] = {}
     warnings: list[str] = []
-    if unverified_rows.size:
-        warnings.append(f"{unverified_rows.size} rows did not verify and were left out (unverified_subtracted.star).")
-        path = write_star_particle_subset(sub_index, unverified_rows.tolist(), out_dir / "unverified_subtracted.star",
-                                          header_comment=comment)
-        outputs["unverified_subtracted"] = str(path)
+    excluded: list[tuple[int, str]] = []
+
     if apply_to is None:
+        correctable = verified & stale
+        n = max(sub_index.row_count, 1)
+        if (verified & already).sum() / n >= ACCEPT_FRACTION:
+            raise ValueError(
+                f"{subtracted} is already coordinate-corrected: {int((verified & already).sum())} rows already hold "
+                "the corrected coordinates. Nothing was written (a second correction would shift them again)."
+            )
+        if correctable.sum() / n < ACCEPT_FRACTION:
+            raise ValueError(
+                f"Only {int(correctable.sum())} of {sub_index.row_count} rows have the stale coordinates RELION writes "
+                f"(already corrected {int(already.sum())}, unexpected {int(other.sum())}). This does not look like an "
+                "unmodified RELION subtraction output; nothing was written."
+            )
+        for row in np.flatnonzero(~correctable):
+            reason = "origin/angle verification failed" if not verified[row] else (
+                "already corrected" if already[row] else "coordinates neither stale nor corrected")
+            excluded.append((int(row), reason))
+        out_dir = _prepare_out_dir(output_dir, job_dir, overwrite)
+        rows = np.flatnonzero(correctable).tolist()
         output = out_dir / f"{subtracted.stem}_coords_corrected.star"
         write_star_particle_subset(
-            sub_index,
-            verified_rows.tolist(),
-            output,
-            header_comment=comment,
-            replace_columns={
-                "_rlnCoordinateX": [formatted[0][i] for i in verified_rows],
-                "_rlnCoordinateY": [formatted[1][i] for i in verified_rows],
-            },
+            sub_index, rows, output, header_comment=comment,
+            replace_columns={"_rlnCoordinateX": [formatted[0][i] for i in rows],
+                             "_rlnCoordinateY": [formatted[1][i] for i in rows]},
         )
         outputs["corrected_star"] = str(output)
+        written = {"rows_written": len(rows), "rows_corrected": len(rows), "rows_already_corrected_kept": 0}
         applied = None
+        source_for_excluded = sub_index
     else:
         apply_path = Path(apply_to)
         apply_index = index_star_particles(apply_path, columns=("_rlnImageName", *_COORDS))
-        corrected_by_name = {
-            unquote_star_value(sub_index.columns["_rlnImageName"][i]): i for i in verified_rows
-        }
-        rows, xs, ys, unmatched = [], [], [], []
-        for row, name in enumerate(apply_index.columns["_rlnImageName"]):
-            source_row = corrected_by_name.get(unquote_star_value(name))
+        target_names = [unquote_star_value(v) for v in apply_index.columns.get("_rlnImageName", [])]
+        if not target_names:
+            raise ValueError(f"--apply-to: {apply_path} has no _rlnImageName column to identify particles")
+        if len(set(target_names)) != len(target_names):
+            raise ValueError(f"--apply-to: _rlnImageName is not unique in {apply_path}; particle identity is ambiguous")
+        source_by_name = {unquote_star_value(sub_index.columns["_rlnImageName"][i]): i for i in np.flatnonzero(verified)}
+        target_coords = float_columns(apply_index, _COORDS)
+        rows, xs, ys = [], [], []
+        counts = {"corrected": 0, "already_corrected": 0, "unmatched": 0, "unexpected": 0}
+        for row, name in enumerate(target_names):
+            source_row = source_by_name.get(name)
             if source_row is None:
-                unmatched.append(row)
+                counts["unmatched"] += 1
+                excluded.append((row, "no verified subtracted particle with this _rlnImageName"))
+                continue
+            if np.all(np.abs(target_coords[row] - input_coords[source_row]) <= COORDINATE_TOLERANCE_PX):
+                counts["corrected"] += 1
+            elif np.all(np.abs(target_coords[row] - corrected[source_row]) <= COORDINATE_TOLERANCE_PX):
+                counts["already_corrected"] += 1
+            else:
+                counts["unexpected"] += 1
+                excluded.append((row, "coordinates are neither the stale nor the corrected value"))
                 continue
             rows.append(row)
             xs.append(formatted[0][source_row])
             ys.append(formatted[1][source_row])
-        if not rows:
-            raise ValueError(f"--apply-to: no row of {apply_path} carries a subtracted _rlnImageName")
+        n = max(apply_index.row_count, 1)
+        if counts["already_corrected"] / n >= ACCEPT_FRACTION:
+            raise ValueError(
+                f"--apply-to: {apply_path} already holds the corrected coordinates for "
+                f"{counts['already_corrected']} of {apply_index.row_count} rows. Nothing was written."
+            )
+        if (counts["corrected"] + counts["already_corrected"]) / n < ACCEPT_FRACTION or not counts["corrected"]:
+            raise ValueError(
+                f"--apply-to: only {counts['corrected']} of {apply_index.row_count} rows carry a verified subtracted "
+                f"particle with the stale coordinates ({counts}). Nothing was written."
+            )
+        out_dir = _prepare_out_dir(output_dir, job_dir, overwrite)
         output = out_dir / f"{apply_path.stem}_coords_corrected.star"
         write_star_particle_subset(apply_index, rows, output, header_comment=comment,
                                    replace_columns={"_rlnCoordinateX": xs, "_rlnCoordinateY": ys})
         outputs["corrected_star"] = str(output)
-        if unmatched:
-            warnings.append(f"--apply-to: {len(unmatched)} rows have no verified subtracted image name and were left out.")
-            path = write_star_particle_subset(apply_index, unmatched, out_dir / "apply_to_unmatched.star",
-                                              header_comment=comment)
-            outputs["apply_to_unmatched"] = str(path)
-        applied = {"path": str(apply_path), "rows": apply_index.row_count, "corrected_rows": len(rows),
-                   "unmatched_rows": len(unmatched), "join": "_rlnImageName = subtracted _rlnImageName",
+        written = {"rows_written": len(rows), "rows_corrected": counts["corrected"],
+                   "rows_already_corrected_kept": counts["already_corrected"]}
+        applied = {"path": str(apply_path), "rows": apply_index.row_count, **counts,
+                   "identity": "target _rlnImageName = subtracted _rlnImageName (unique, verified subtracted rows only)",
+                   "transferred_value": "corrected coordinates computed from the subtraction input; the target's "
+                                        "own angles and origins are not used",
                    "sha256": stream_sha256(apply_path)}
+        source_for_excluded = apply_index
+    if excluded:
+        warnings.append(f"{len(excluded)} rows were left out; see excluded_rows.star and the report.")
+        path = write_star_particle_subset(source_for_excluded, [row for row, _ in excluded],
+                                          out_dir / "excluded_rows.star", header_comment=comment)
+        outputs["excluded_rows"] = str(path)
+    verification["written"] = written
+    verification["excluded_reasons"] = dict(Counter(reason for _, reason in excluded))
 
     report = {
         "artifact_type": "cryorole_subtract_coordinate_correction",
@@ -292,6 +342,14 @@ def fix_subtract_coordinates(
     report["report_path"] = str(report_path)
     log(f"  wrote {outputs['corrected_star']}")
     return report
+
+
+def _prepare_out_dir(output_dir: str | Path | None, job_dir: Path, overwrite: bool) -> Path:
+    out_dir = Path(output_dir) if output_dir is not None else _default_output_dir(job_dir)
+    if out_dir.exists() and any(out_dir.iterdir()) and not overwrite:
+        raise FileExistsError(f"Output directory already exists: {out_dir}. Use --overwrite or choose --output-dir.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
 
 
 def _default_output_dir(job_dir: Path) -> Path:

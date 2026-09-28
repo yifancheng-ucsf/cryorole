@@ -565,6 +565,8 @@ def _exact_summary(link: _ExactLink, in_rows: int, out_rows: int) -> dict[str, A
         "verified_count": verified,
         "verified_fraction_of_smaller_input": verified / denominator,
         "verified_fraction_note": "denominator excludes indistinguishable duplicates (identical micrograph, coordinates, origins and angles)",
+        "input_rows": in_rows,
+        "output_rows": out_rows,
         "unverified_count": len(link.unverified_in),
         "unverified_reasons": dict(link.reasons),
         "ambiguous_input_rows": len(link.ambiguous_in),
@@ -669,7 +671,13 @@ def _name_link(
             duplicate_policy=duplicate_policy,
         )
         mapping = dict(match.pairs)
-        info = {"key": spec.describe()[0], "matched": len(mapping), "duplicate_rows": len(match.duplicate_ref) + len(match.duplicate_mov)}
+        info = {
+            "key": spec.describe()[0],
+            "input_rows": [len(a_values), len(b_values)],
+            "matched": len(mapping),
+            "duplicate_rows": [len(match.duplicate_ref), len(match.duplicate_mov)],
+            "unmatched_rows": [len(match.ref_only), len(match.mov_only)],
+        }
         tried.append(info)
         if best is None or len(mapping) > best[0]:
             best = (len(mapping), mapping, info)
@@ -763,6 +771,13 @@ def _align_chain(
                     {"step": "extraction output -> mov", "method": "exact particle name", **link3},
                 ],
                 "rows_lost_per_link": broken,
+                "final_pair": {
+                    "ref_rows": ref_index.row_count,
+                    "mov_rows": mov_index.row_count,
+                    "paired": len(pairs),
+                    "ref_unpaired": ref_index.row_count - len(pairs),
+                    "mov_unpaired": mov_index.row_count - len(pairs),
+                },
                 "sha256": {
                     "extraction_input": stream_sha256(extraction_input),
                     "extraction_output": stream_sha256(extraction_output),

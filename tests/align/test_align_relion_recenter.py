@@ -307,13 +307,92 @@ def test_fix_subtract_coordinates_golden_matches_job043(tmp_path) -> None:
     assert (project / "Subtract" / "job041" / "particles_subtracted.star").read_bytes() == before
 
 
-def test_fix_subtract_coordinates_apply_to_downstream_refinement(tmp_path) -> None:
+def _stale_downstream_refinement(tmp_path: Path) -> Path:
+    """A later refinement of the subtracted particles: job043 rows with RELION's stale coordinates restored and
+    angles/origins perturbed (a refinement changes them). The correction must come from the subtraction, not from
+    these angles."""
+
+    stale_xy = dict(zip(_particles(J41)["_rlnImageName"], zip(_particles(J41)["_rlnCoordinateX"], _particles(J41)["_rlnCoordinateY"])))
+    rng = np.random.default_rng(11)
+    lines = J43.read_text(encoding="utf-8").splitlines()
+    out = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) == 11 and "@Subtract/" in fields[0]:
+            fields[2], fields[3] = stale_xy[fields[0]]
+            for k in (4, 5, 6):
+                fields[k] = f"{float(fields[k]) + rng.uniform(-20, 20):.6f}"
+            for k in (7, 8):
+                fields[k] = f"{float(fields[k]) + rng.uniform(-5, 5):.6f}"
+            line = " ".join(fields)
+        out.append(line)
+    path = tmp_path / "job042_like_run_data.star"
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return path
+
+
+def test_fix_subtract_apply_to_transfers_by_identity_not_by_target_angles(tmp_path) -> None:
     project = _subtract_project(tmp_path)
-    report = fix_subtract_coordinates(project / "Subtract" / "job041", apply_to=J43, output_dir=tmp_path / "o",
+    target = _stale_downstream_refinement(tmp_path)
+    report = fix_subtract_coordinates(project / "Subtract" / "job041", apply_to=target, output_dir=tmp_path / "o",
                                       log=lambda *_: None)
     out = _particles(Path(report["outputs"]["corrected_star"]))
-    assert out.equals(_particles(J43))  # job043 is exactly job042 with these corrected coordinates
-    assert report["apply_to"]["corrected_rows"] == 1057
+    np.testing.assert_array_equal(out[COORDS].to_numpy(float), _array(J43, COORDS))
+    # every other column is the target's own value, untouched (including its perturbed angles and origins)
+    assert out.drop(columns=COORDS).equals(_particles(target).drop(columns=COORDS))
+    assert report["apply_to"]["corrected"] == 1057
+    assert "not used" in report["apply_to"]["transferred_value"]
+
+
+def test_fix_subtract_apply_to_already_corrected_target_is_refused(tmp_path) -> None:
+    project = _subtract_project(tmp_path)
+    with pytest.raises(ValueError, match="already holds the corrected coordinates"):
+        fix_subtract_coordinates(project / "Subtract" / "job041", apply_to=J43, output_dir=tmp_path / "o",
+                                 log=lambda *_: None)
+    assert not (tmp_path / "o").exists()
+
+
+def test_fix_subtract_second_application_is_refused(tmp_path) -> None:
+    project = _subtract_project(tmp_path)
+    first = fix_subtract_coordinates(project / "Subtract" / "job041", log=lambda *_: None)
+    with pytest.raises(ValueError, match="already coordinate-corrected"):
+        fix_subtract_coordinates(first["outputs"]["corrected_star"], center=[9, -22, 102],
+                                 subtract_input=project / "Refine3D" / "job022" / "run_data.star",
+                                 output_dir=tmp_path / "second", log=lambda *_: None)
+    assert not (tmp_path / "second").exists()
+
+
+def test_fix_subtract_wrong_subtraction_input_writes_nothing(tmp_path) -> None:
+    project = _subtract_project(tmp_path)
+    with pytest.raises(ValueError):
+        fix_subtract_coordinates(project / "Subtract" / "job041", subtract_input=J52, output_dir=tmp_path / "o",
+                                 log=lambda *_: None)
+    assert not (tmp_path / "o").exists()
+
+
+def test_fix_subtract_changes_only_coordinate_fields_byte_for_byte(tmp_path) -> None:
+    import re
+
+    project = _subtract_project(tmp_path)
+    report = fix_subtract_coordinates(project / "Subtract" / "job041", log=lambda *_: None)
+    source = (project / "Subtract" / "job041" / "particles_subtracted.star").read_text(encoding="utf-8").splitlines()
+    output = Path(report["outputs"]["corrected_star"]).read_text(encoding="utf-8").splitlines()
+    assert output[0].startswith("# cryoROLE subtract-coordinate correction")
+    assert len(output) == len(source) + 1
+    token = re.compile(r"\S+")
+    changed_columns = set()
+    for before, after in zip(source, output[1:]):
+        if before == after:
+            continue
+        a, b = list(token.finditer(before)), list(token.finditer(after))
+        assert len(a) == len(b)
+        diff = [i for i, (x, y) in enumerate(zip(a, b)) if x.group() != y.group()]
+        changed_columns.update(diff)
+        masked = lambda line, spans: "".join(  # noqa: E731
+            line[spans[i - 1].end() if i else 0:m.start()] for i, m in enumerate(spans)) + line[spans[-1].end():]
+        assert masked(before, a) == masked(after, b)  # identical whitespace between fields
+    assert changed_columns == {2, 3}  # _rlnCoordinateX, _rlnCoordinateY
+    assert report["parameters"]["changed_columns"] == COORDS
 
 
 def test_fix_subtract_coordinates_wrong_parameters_write_nothing(tmp_path) -> None:
