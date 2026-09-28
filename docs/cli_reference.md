@@ -80,8 +80,8 @@ cryorole select --run-dir RUN --selection-id ID --space SPACE -c A B C -r DEG
 cryorole export --run-dir RUN --selection-id ID --domain ref|mov|both
 ```
 
-See [Output files](output_files.md) for artifact contents and
-[Workflow tutorial](workflow_ux.md) for scientific and display boundaries.
+See `docs/architecture.md` for the stable artifact and scientific policy
+contract.
 
 
 ## Visualization terminology
