@@ -17,6 +17,8 @@ from scipy.spatial.transform import Rotation
 from cryorole.cli.main import build_parser, run_command
 from cryorole.io.writers.landscape_store import read_landscape_npz_arrays
 
+pytestmark = pytest.mark.private_fixtures("j75_j80_out_of_range_poses.npz")
+
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "j75_j80_out_of_range_poses.npz"
 

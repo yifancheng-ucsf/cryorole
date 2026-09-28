@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 import shutil
 from pathlib import Path
 
 from cryorole.preflight.align_diagnosis import diagnose_star_matching
 from cryorole.preflight.service import PreflightRequest, run_preflight
+
+pytestmark = pytest.mark.private_fixtures("relion_recenter")
 
 F = Path(__file__).resolve().parents[1] / "fixtures" / "relion_recenter"
 

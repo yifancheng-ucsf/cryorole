@@ -243,7 +243,7 @@ For public run outputs and workflow behavior, see `docs/output_files.md` and `do
 
 ---
 
-## Things Codex must not do
+## Things contributors and coding agents must not do
 
 - Do not change RO definition.
 - Do not change passive/active interpretation silently.

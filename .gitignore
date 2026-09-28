@@ -30,9 +30,10 @@ alignments/
 *.cs
 *.star
 
-# Small committed test fixtures opt in explicitly:
-!tests/fixtures/**
-# Future examples may opt in explicitly, for example:
+# Data-derived test fixtures stay local until the public tutorial datasets are
+# released; tests that need them are skipped (see tests/conftest.py).
+/tests/fixtures/
+# Future public examples may opt in explicitly, for example:
 #!examples/**
 
 # OS files

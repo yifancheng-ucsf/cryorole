@@ -4,12 +4,13 @@
 
 cryoROLE (cryo-EM Relative Orientation LandscapE) compares the per-particle orientations of two separately refined, approximately rigid domains. Start with CryoSPARC `.cs` or RELION `.star` metadata; obtain a relative-orientation landscape, plots, and selected metadata for downstream refinement or reconstruction.
 
-The public interface is the `cryorole` command. The current package version is `2.0.0a1` (pre-release).
+The public interface is the `cryorole` command; the same steps are available from Python through `cryorole.api`. The current package version is `2.0.0a1` (pre-release).
 
 [Get started](#your-first-analysis) · [Visualize](#visualize-create-and-customize-plots) · [Select](#select-save-particle-subsets) · [Find outputs](#find-your-results) · [Help](#common-questions)
 
 ## Contents
 
+- [What's new](#whats-new)
 - [What can I do with cryoROLE?](#what-can-i-do-with-cryorole)
 - [Before you start](#before-you-start)
 - [Install](#install)
@@ -19,6 +20,19 @@ The public interface is the `cryorole` command. The current package version is `
 - [Common questions](#common-questions)
 - [Advanced workflows and documentation](#advanced-workflows-and-documentation)
 - [Citation](#citation) and [license](#license)
+
+## What's new
+
+This update changes how CryoSPARC poses are read, adds tools for RELION inputs that do not match directly, and makes the command line easier to use.
+
+- **CryoSPARC pose convention (please re-run `.cs` analyses).** `alignments3D/pose` is now read the same way as pyem `csparc2star.py`, so a `.cs` input and the same particles converted to STAR give the same relative orientations. Runs made with earlier versions from `.cs` files have the same RO angles but different RO axes; re-run them. RELION `.star` inputs are unchanged. See the [CryoSPARC workflow](docs/cryosparc_workflow.md).
+- **`cryorole align` for RELION.** Pairs particles when default matching fails, for example after signal subtraction or re-extraction: explicit key pairs (`--key-pair`), exact matching of recentred re-extractions (`--coordinate-match recentered-exact`), and chains of jobs. `--fix-subtract-coordinates` writes a verified copy of a recentred subtraction with corrected coordinates. `preflight` suggests the right command. See the [RELION workflow](docs/relion_workflow.md#preparing-aligned-star-files).
+- **Input sanity checks.** `preflight` blocks when `--ref` and `--mov` are the same file, and every run reports a relative-orientation angle summary with warnings for identical or nearly identical poses.
+- **Shorter commands and clearer errors.** `--run-dir`, `--canonical-id` and, for `export`, `--selection-id` can be omitted when there is only one candidate. Errors end with a `what to do:` line. `cryorole --version` works, and `COMMAND --help` ends with examples. See [Common behaviour](docs/cli_reference.md#common-behaviour).
+- **Python API.** `from cryorole import api` gives typed functions for every step, with progress reporting and cancellation. See [Python API](docs/python_api.md).
+- **Reproducible random selections.** A random selection without `--seed` now records the seed it used.
+
+Tutorial datasets (two CryoSPARC `.cs` examples and a RELION `.star` example) will be published separately.
 
 ## What can I do with cryoROLE?
 
@@ -30,6 +44,8 @@ The public interface is the `cryorole` command. The current package version is `
 | Preview a region interactively and confirm a particle subset | `explore` |
 | Save subsets by orientation, SLD, coordinate range, random sampling, or source metadata | `select` |
 | Export the selected original metadata for CryoSPARC or RELION | `export` |
+| Pair RELION STAR files that do not match directly (subtraction, re-extraction) | `align` |
+| Script any of the above from Python or a notebook | `cryorole.api` |
 
 cryoROLE starts from existing domain-specific pose estimates. It does not perform the domain refinements or reconstruct maps. Its relative orientation is `RO = R_ref^-1 R_mov`. SLD summarizes local sampling density in the orientation landscape; higher SLD indicates more densely sampled regions under the recorded density policy.
 

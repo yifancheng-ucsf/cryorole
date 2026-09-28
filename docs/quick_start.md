@@ -1,7 +1,8 @@
 # cryoROLE 2.0 Quick Start
 
-This guide shows the smallest practical cryoROLE 2.0 workflow. For the stable
-artifact and policy contract, see `docs/architecture.md`.
+This guide shows the smallest practical cryoROLE 2.0 workflow. For the
+artifact layout, see `docs/output_files.md`; for every command option, see
+`docs/cli_reference.md`.
 
 ## Install
 

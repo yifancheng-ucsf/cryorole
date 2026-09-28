@@ -22,6 +22,8 @@ from cryorole.io.writers.landscape_store import read_landscape_npz_arrays
 from cryorole.models.policies import ConventionPolicy
 from cryorole.normalize.conventions import ConventionResolver
 
+pytestmark = pytest.mark.private_fixtures("j75_j80_subset_2000.npz", "j75_subset_2000_pyem.star", "j80_subset_2000_pyem.star")
+
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 EULER = ["_rlnAngleRot", "_rlnAngleTilt", "_rlnAnglePsi"]
 

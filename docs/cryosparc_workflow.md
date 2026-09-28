@@ -29,8 +29,8 @@ active_matrix = Rotation.from_rotvec(pose).as_matrix().T
 ```
 
 A `.cs` input and the same particles converted to STAR with `csparc2star.py`
-give identical relative orientations; a golden test on a J75/J80 subset locks
-this. The rule is recorded as the CryoSPARC `ConventionPolicy` in
+give identical relative orientations; a golden test against real
+`csparc2star.py` output locks this. The rule is recorded as the CryoSPARC `ConventionPolicy` in
 `run_manifest.json` and in the preflight report. Rotation vectors of any norm,
 including the ones above pi that CryoSPARC sometimes writes, are valid.
 

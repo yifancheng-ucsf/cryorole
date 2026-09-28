@@ -92,6 +92,11 @@ On macOS/Linux, use forward slashes in the test paths:
 python -m pytest tests/core tests/normalize tests/match tests/io -q
 ```
 
+The full suite is `python -m pytest tests -q`. A few regression tests use
+small subsets of real cryo-EM data that are not published yet; in a public
+checkout they are reported as skipped ("needs unpublished data-derived
+fixture"), not failed.
+
 ## Verification
 
 After installation, check:

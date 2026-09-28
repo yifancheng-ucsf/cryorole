@@ -11,6 +11,8 @@ import pytest
 from cryorole.align.star_align import align_star_files
 from cryorole.cli.main import build_parser, run_command
 
+pytestmark = pytest.mark.private_fixtures("relion_recenter")
+
 F = Path(__file__).resolve().parents[1] / "fixtures" / "relion_recenter"
 
 

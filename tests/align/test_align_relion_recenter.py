@@ -30,6 +30,8 @@ from cryorole.align.subtract_fix import fix_subtract_coordinates
 from cryorole.cli.main import align_command, build_parser
 from cryorole.io.readers.star_reader import read_relion_star
 
+pytestmark = pytest.mark.private_fixtures("relion_recenter")
+
 F = Path(__file__).resolve().parents[1] / "fixtures" / "relion_recenter"
 J22 = F / "job022_run_data_subset.star"
 J41 = F / "job041_particles_subtracted_subset.star"

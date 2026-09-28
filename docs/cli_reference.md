@@ -172,8 +172,8 @@ completed and validated; `canonicalize --overwrite` replaces
 `export` refuses to write a subset when the source particle table no longer has
 the row count recorded by the run.
 
-See `docs/architecture.md` for the stable artifact and scientific policy
-contract.
+See `docs/output_files.md` for the artifact layout and the scientific and
+display distinctions.
 
 
 ## Visualization terminology

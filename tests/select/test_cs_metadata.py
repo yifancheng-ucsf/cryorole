@@ -216,6 +216,7 @@ def test_metadata_help_explains_cs_types_and_limit(capsys):
     assert 'alignments3D/class' in help_text
 
 
+@pytest.mark.private_fixtures('j75_subset_2000_pyem.star', 'j80_subset_2000_pyem.star')
 def test_star_metadata_selection_refuses_a_changed_source(tmp_path):
     """RELION STAR metadata selection verifies the recorded source SHA-256 too (review §1.5)."""
 
