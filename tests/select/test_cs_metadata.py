@@ -214,3 +214,30 @@ def test_metadata_help_explains_cs_types_and_limit(capsys):
     assert 'scalar integers, booleans' in help_text
     assert '100 groups' in help_text
     assert 'alignments3D/class' in help_text
+
+
+def test_star_metadata_selection_refuses_a_changed_source(tmp_path):
+    """RELION STAR metadata selection verifies the recorded source SHA-256 too (review §1.5)."""
+
+    import shutil
+    from pathlib import Path
+
+    from cryorole import api
+
+    fixtures = Path(__file__).resolve().parents[1] / 'fixtures'
+    ref, mov = tmp_path / 'j75.star', tmp_path / 'j80.star'
+    shutil.copy(fixtures / 'j75_subset_2000_pyem.star', ref)
+    shutil.copy(fixtures / 'j80_subset_2000_pyem.star', mov)
+    run_dir = tmp_path / 'run'
+    api.run(ref, mov, output_dir=run_dir, k_neighbors=10, no_visualize=True)
+    ok = api.select(run_dir, selection_id='cls', mode='metadata', metadata_domain='ref',
+                    metadata_column='rlnClassNumber', metadata_value='1')
+    assert ok.selected_counts[0] > 0
+    summary = json.loads((ok.output_dir / 'selection_summary.json').read_text())
+    assert summary['metadata_source_details']['verification_status'] == 'verified_sha256'
+
+    ref.write_text(ref.read_text().replace('data_particles', 'data_particles\n# edited', 1))
+    with pytest.raises(ValueError, match='SHA-256|hash|changed'):
+        api.select(run_dir, selection_id='cls2', mode='metadata', metadata_domain='ref',
+                   metadata_column='rlnClassNumber', metadata_value='1')
+    assert not (run_dir / 'selections' / 'cls2').exists()

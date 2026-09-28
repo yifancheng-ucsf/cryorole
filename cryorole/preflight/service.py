@@ -44,6 +44,9 @@ class PreflightRequest:
     # "block": same ref/mov file is a preflight error (public ``preflight`` and
     # ``run --dry-run``). "warn": recorded as a strong warning (production run).
     same_file_policy: str = "block"
+    # Machine checks (versions, writable output, memory). Off inside a run,
+    # whose own staging directory already exists.
+    check_environment: bool = True
 
 
 def run_preflight(
@@ -202,6 +205,17 @@ def run_preflight(
         errors.append("Estimated output exceeds available disk space with the 20% safety margin")
     if resource["recommend_no_visualize"] and request.visualize:
         warnings.append("large_input_consider_--no-visualize")
+    environment = None
+    if request.check_environment:
+        from cryorole.preflight.environment import check_environment
+
+        env_check = check_environment(
+            request.output_dir,
+            estimated_peak_memory_bytes=int(resource["estimated_peak_memory_bytes"]),
+        )
+        environment = env_check["environment"]
+        errors.extend(env_check["errors"])
+        warnings.extend(env_check["warnings"])
     readiness = "BLOCKED" if errors else ("READY_WITH_WARNINGS" if warnings else "READY")
     resolved_command = _resolved_run_command(request)
     report: dict[str, Any] = {
@@ -238,6 +252,7 @@ def run_preflight(
             "visualize": request.visualize,
         },
         "resource_estimate": resource,
+        "environment": environment,
         "warnings": warnings,
         "errors": errors,
         "resolved_run_command": resolved_command,

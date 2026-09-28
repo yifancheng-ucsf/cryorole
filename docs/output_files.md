@@ -182,6 +182,24 @@ canonical_frame.npz
 Canonicalization derives a coordinate frame and writes new artifacts. It does
 not overwrite raw landscape artifacts.
 
+## Resolved options (`resolved_by`)
+
+When `--run-dir`, `--canonical-id` or `--selection-id` is omitted and cryoROLE
+fills it in (see `docs/cli_reference.md`, Common behaviour), the report written
+by that command records how, for example:
+
+```json
+"resolved_by": {
+  "run_dir": {"value": "cryorole_outputs", "resolved_by": "default_output_dir"},
+  "canonical_id": {"value": "default", "resolved_by": "only_candidate"}
+}
+```
+
+`resolved_by` is `explicit`, `current_directory`, `default_output_dir` or
+`only_candidate`. It appears in `canonicalize_summary.json`,
+`selection_summary.json`, `visualization_report.json`, the export
+`export_report.json`, and the `status` / `next` JSON output.
+
 ## Selections
 
 Selections live under:
@@ -202,6 +220,10 @@ selection_summary.json
 
 A selection is a scientific decision artifact. It is not the same thing as a
 visualization filter.
+
+Random-mode selections always record the seed used: `random_seed` in
+`selection.json` and `selection_summary.json`, with `random_seed_source`
+(`user` for `--seed`, `generated` when it was omitted) in the summary.
 
 CLI select and interactive Confirm use the same standard artifact writer for
 these five files. `selected_landscape_rows.csv` retains ref/mov source-row IDs

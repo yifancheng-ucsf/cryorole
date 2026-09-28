@@ -112,6 +112,8 @@ my_run/exports/region_01/mov/selected_mov.cs
 
 These are metadata subsets for downstream CryoSPARC use. Export preserves source poses and does not modify the original files. See the [CryoSPARC workflow](docs/cryosparc_workflow.md) for more details.
 
+**Shorter commands.** If you run commands from inside `my_run`, or used the default output directory `cryorole_outputs`, you can leave out `--run-dir`. Likewise `--canonical-id` and, for `export`, `--selection-id` can be left out when the bundle has only one. cryoROLE prints what it used and records it in the report; when there is more than one candidate it lists them and asks you to choose. See [Common behaviour](docs/cli_reference.md#common-behaviour).
+
 ### Using RELION STAR instead
 
 Replace the first two commands with the following, then follow the same inspection, selection, and export steps. This is an alternative start: use a fresh `my_run` directory if you already ran the CryoSPARC example.
@@ -364,6 +366,7 @@ Older generated files can contain a JavaScript newline-escaping error. Regenerat
 | RELION input, matching, and optional `align` preparation | [RELION workflow](docs/relion_workflow.md) |
 | Resume work, inspect status, or get next-step guidance | [Workflow tutorial: `status`, `next`, `guide`, `explore`](docs/workflow_ux.md) |
 | Look up command arguments | [CLI reference](docs/cli_reference.md) and `cryorole COMMAND --help` |
+| Use cryoROLE from Python (notebooks, scripts, a GUI) | [Python API](docs/python_api.md) |
 | Inspect landscape CSVs in ChimeraX | [Standalone viewer](cryorole_chimerax_viewer.py): its opening documentation gives setup and commands |
 | Render landscape/rigid-body movies or canonical camera views | [Animation and canonical-views guide](docs/animation_export.md); structure execution requires ChimeraX, MP4 encoding additionally requires FFmpeg/FFprobe |
 | Apply a diagnostic rotation to a derived landscape | [Rotation script](scripts/rotate_landscape.py), with usage through `--help` |

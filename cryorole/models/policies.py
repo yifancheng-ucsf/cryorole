@@ -271,6 +271,8 @@ class SelectionMetadataExportPolicy:
     relocated_ref: str | Path | None = None
     relocated_mov: str | Path | None = None
     allow_unverified_source: bool = False
+    # How omitted --run-dir / --selection-id were filled in (cryorole.workflow.resolve).
+    resolved_by: dict[str, dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)

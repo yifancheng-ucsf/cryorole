@@ -57,6 +57,8 @@ class CanonicalizeRequest:
     csv_chunk_size: int = 100_000
     profile_memory: bool = False
     overwrite: bool = False
+    # How an omitted --run-dir was filled in (cryorole.workflow.resolve).
+    resolved_by: dict[str, dict[str, str]] | None = None
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "CanonicalizeRequest":
@@ -167,7 +169,24 @@ def canonicalize_run_artifacts(
     )
 
 
+@dataclass(frozen=True)
+class CanonicalizeResult:
+    """Where ``canonicalize`` wrote the canonical frame and what it contains."""
+
+    output_dir: Path
+    summary: dict[str, Any]
+
+
 def canonicalize(request: CanonicalizeRequest) -> int:
+    """Compatibility wrapper returning an exit status; see ``canonicalize_bundle``."""
+
+    canonicalize_bundle(request)
+    return 0
+
+
+def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
+    """Derive (or apply) a canonical frame and write it; never prints."""
+
     args = request
     memory_profiler = _MemoryProfiler(enabled=args.profile_memory)
     memory_profiler.sample("start")
@@ -349,6 +368,7 @@ def canonicalize(request: CanonicalizeRequest) -> int:
             "source_landscape_path": source_metadata["path"],
             "source_run_dir": args.run_dir,
             "parent_run_id": _run_id_from_bundle(args.run_dir) if args.run_dir else None,
+            "resolved_by": dict(args.resolved_by or {}),
             "source_landscape_artifact_type": source_metadata["artifact_type"],
             "source_landscape_schema_version": source_metadata["schema_version"],
             "source_landscape_row_count": source_metadata["row_count"],
@@ -397,8 +417,7 @@ def canonicalize(request: CanonicalizeRequest) -> int:
     memory_profiler.sample("canonicalize_summary_written")
     if args.profile_memory:
         memory_profiler.write(memory_profile_path, overwrite=args.overwrite)
-    print(str(output_dir))
-    return 0
+    return CanonicalizeResult(output_dir=output_dir, summary=canonicalize_summary)
 
 
 def _canonicalize_fit_top_fraction(args) -> float:

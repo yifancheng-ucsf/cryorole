@@ -137,6 +137,7 @@ def export_selection_metadata_subset(
         "parent_run_id": selection.parent_run_id,
         "run_id": run_id,
         "selection_path": str(selection_path_obj) if selection_path_obj is not None else None,
+        "resolved_by": dict(policy.resolved_by or {}),
         "domain": policy.domain,
         "format_requested": policy.format,
         "format_resolved": format_resolved,

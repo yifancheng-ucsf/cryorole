@@ -28,10 +28,36 @@ class _StoreExplicit(argparse.Action):
         namespace.explicit_options = (*getattr(namespace, "explicit_options", ()), self.dest)
 
 
+def _package_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("cryorole")
+    except Exception:  # noqa: BLE001 - not installed as a distribution (e.g. source checkout)
+        from cryorole import __version__
+
+        return __version__
+
+
 def build_command_parser(handlers: Mapping[str, Callable[..., int]]) -> argparse.ArgumentParser:
     """Build the cryoROLE CLI parser without embedding scientific logic."""
 
-    parser = _CommandParser(prog="cryorole")
+    parser = _CommandParser(
+        prog="cryorole",
+        description="cryoROLE: relative-orientation landscapes between two refined bodies.",
+        epilog=(
+            "Typical workflow:\n"
+            "  cryorole preflight --ref ref.cs --mov mov.cs\n"
+            "  cryorole run --ref ref.cs --mov mov.cs --output-dir my_run\n"
+            "  cryorole canonicalize --run-dir my_run\n"
+            "  cryorole visualize --run-dir my_run --space canonical\n"
+            "  cryorole select --run-dir my_run --selection-id region_01 --mode radius -c 0 0 0 -r 10\n"
+            "  cryorole export --run-dir my_run --selection-id region_01\n"
+            "Run `cryorole COMMAND --help` for details and examples."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=f"cryorole {_package_version()}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     _add_align_parser(subparsers, handlers)
@@ -48,7 +74,52 @@ def build_command_parser(handlers: Mapping[str, Callable[..., int]]) -> argparse
     _add_select_parser(subparsers, handlers)
     _add_export_parser(subparsers, handlers)
     _add_manifest_parser(subparsers, handlers)
+    _attach_examples(subparsers)
     return parser
+
+
+# Copyable examples shown at the end of ``cryorole COMMAND --help`` for
+# commands that do not define their own epilog. RUN defaults to the current
+# bundle or ./cryorole_outputs when --run-dir is omitted.
+_COMMAND_EXAMPLES = {
+    "preflight": (
+        "cryorole preflight --ref ref.cs --mov mov.cs",
+        "cryorole preflight --ref consensus.star --mov body.star --json report.json",
+    ),
+    "run": (
+        "cryorole run --ref ref.cs --mov mov.cs --output-dir my_run",
+        "cryorole run --ref aligned_ref.star --mov aligned_mov.star --row-aligned --output-dir my_run",
+        "cryorole run --ref ref.cs --mov mov.cs --dry-run   # same checks as preflight",
+    ),
+    "guide": (
+        "cryorole guide --ref ref.cs --mov mov.cs --non-interactive",
+        "cryorole guide --run-dir my_run",
+    ),
+    "explore": ("cryorole explore --run-dir my_run --space canonical",),
+    "visualize": (
+        "cryorole visualize --run-dir my_run",
+        "cryorole visualize --run-dir my_run --space canonical --view 2d,1d --top-fraction 0.4",
+        "cryorole visualize --run-dir my_run --selection-id region_01 --visual-id region_01",
+    ),
+    "canonicalize": (
+        "cryorole canonicalize --run-dir my_run",
+        "cryorole canonicalize --run-dir my_run --canonical-id fit50 --fit-top 0.5",
+        "cryorole canonicalize --run-dir other_run --use-frame my_run/canonical/default/canonical_frame.json",
+    ),
+    "export": (
+        "cryorole export --run-dir my_run --selection-id region_01",
+        "cryorole export --run-dir my_run --selection-id region_01 --domain mov --format relion_star",
+    ),
+}
+
+
+def _attach_examples(subparsers) -> None:
+    for name, examples in _COMMAND_EXAMPLES.items():
+        sub = subparsers.choices.get(name)
+        if sub is None or sub.epilog:
+            continue
+        sub.epilog = "Examples:\n" + "\n".join(f"  {line}" for line in examples)
+        sub.formatter_class = argparse.RawDescriptionHelpFormatter
 
 
 def _add_align_parser(subparsers, handlers) -> None:
@@ -248,7 +319,11 @@ def _add_run_parser(subparsers, handlers) -> None:
         help="Run bundle output directory. Default: cryorole_outputs.",
     )
     parser.add_argument("--manifest-output", help=_HIDDEN_HELP)
-    parser.add_argument("--overwrite", action="store_true", help=_HIDDEN_HELP)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing --output-dir bundle (published only after the new run completes).",
+    )
     parser.add_argument("--no-visualize", action="store_true", help="Skip raw quick-look visualization.")
     parser.add_argument("--quiet", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument("--verbose", action="store_true", help=_HIDDEN_HELP)
@@ -315,15 +390,27 @@ def _add_preflight_parser(subparsers, handlers) -> None:
 
 
 def _add_status_parser(subparsers, handlers) -> None:
-    parser = subparsers.add_parser("status", help="Inspect actual run-bundle artifacts and integrity.")
-    parser.add_argument("--run-dir", required=True, help="Run bundle to inspect.")
+    parser = subparsers.add_parser(
+        "status",
+        help="Inspect actual run-bundle artifacts and integrity.",
+        description="Inspect a run bundle. Exits 0 for a completed or legacy bundle, 3 for a missing, failed or incomplete one.",
+        epilog="Example:\n  cryorole status --run-dir my_run",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--run-dir", help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.")
     parser.add_argument("--json", nargs="?", const="-", dest="json_output", metavar="PATH")
     parser.set_defaults(handler=handlers["status"])
 
 
 def _add_next_parser(subparsers, handlers) -> None:
-    parser = subparsers.add_parser("next", help="Recommend conservative next commands from run artifacts.")
-    parser.add_argument("--run-dir", required=True, help="Run bundle to inspect.")
+    parser = subparsers.add_parser(
+        "next",
+        help="Recommend conservative next commands from run artifacts.",
+        description="Recommend next commands. Exits 0 for a completed or legacy bundle, 3 for a missing, failed or incomplete one.",
+        epilog="Example:\n  cryorole next --run-dir my_run",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--run-dir", help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.")
     parser.add_argument("--json", nargs="?", const="-", dest="json_output", metavar="PATH")
     parser.set_defaults(handler=handlers["next"])
 
@@ -344,9 +431,9 @@ def _add_guide_parser(subparsers, handlers) -> None:
 
 def _add_explore_parser(subparsers, handlers) -> None:
     parser = subparsers.add_parser("explore", help="Explore draft radius selections in an offline local browser.")
-    parser.add_argument("--run-dir", required=True, help="Completed run bundle.")
+    parser.add_argument("--run-dir", help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.")
     parser.add_argument("--space", choices=("raw", "canonical"), default="raw")
-    parser.add_argument("--canonical-id", default="default")
+    parser.add_argument("--canonical-id", default=None, help="Canonical frame (with --space canonical). Omitted: the only frame in the bundle.")
     parser.add_argument("--selection-id", help="Optional existing selection overlay.")
     filters = parser.add_mutually_exclusive_group()
     filters.add_argument("--threshold", type=float, help="Initial display-only SLD threshold.")
@@ -363,14 +450,18 @@ def _add_visualize_parser(subparsers, handlers) -> None:
         "visualize",
         help="Render display-only views from an existing run bundle.",
     )
-    parser.add_argument("--run-dir", required=True, help="Existing cryoROLE run bundle directory.")
+    parser.add_argument("--run-dir", help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.")
     parser.add_argument(
         "--space",
         choices=("raw", "canonical"),
         default="raw",
         help="Landscape space to visualize. Default: raw.",
     )
-    parser.add_argument("--canonical-id", default="default")
+    parser.add_argument(
+        "--canonical-id",
+        default=None,
+        help="Canonical frame (with --space canonical). Omitted: the only frame in the bundle.",
+    )
     parser.add_argument(
         "--selection-id",
         help="Visualize only particles from run_dir/selections/SELECTION_ID.",
@@ -545,11 +636,11 @@ def _add_animate_parser(subparsers, handlers) -> None:
     display_filter = parser.add_mutually_exclusive_group()
     display_filter.add_argument(
         "--threshold",
-        "--sld-threshold",
         dest="threshold",
         type=float,
-        help="Display rows with sld_display >= threshold; --sld-threshold is an alias.",
+        help="Display rows with sld_display >= threshold.",
     )
+    display_filter.add_argument("--sld-threshold", dest="threshold", type=float, help=_HIDDEN_HELP)
     display_filter.add_argument("--top-fraction", type=float)
     parser.add_argument("--colormap", default="rainbow_r")
     parser.add_argument("--vmin", type=float)
@@ -664,7 +755,7 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
         help="Canonicalize an existing landscape explicitly.",
     )
     parser.add_argument("--landscape", help=_HIDDEN_HELP)
-    parser.add_argument("--run-dir", help="Existing cryoROLE run bundle directory.")
+    parser.add_argument("--run-dir", help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.")
     parser.add_argument("--canonical-id", default="default", help="Canonical output id. Default: default.")
     parser.add_argument(
         "--output-dir",
@@ -676,7 +767,11 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
         dest="output_dir",
         help=_HIDDEN_HELP,
     )
-    parser.add_argument("--overwrite", action="store_true", help=_HIDDEN_HELP)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace canonical/<canonical-id>/ only; the raw landscape and other frames are unchanged.",
+    )
     parser.add_argument("--no-csv", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument(
         "--euler-convention",
@@ -691,12 +786,12 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
     )
     parser.add_argument(
         "--fit-top",
-        "--fit-top-fraction",
         dest="fit_top_fraction",
         type=float,
         default=None,
         help="Fraction of highest-sld_raw points used to fit canonical axes. Default: 0.40.",
     )
+    parser.add_argument("--fit-top-fraction", dest="fit_top_fraction", type=float, default=None, help=_HIDDEN_HELP)
     parser.add_argument(
         "--profile-memory",
         action="store_true",
@@ -743,13 +838,13 @@ def _add_select_parser(subparsers, handlers) -> None:
   cryorole select --run-dir RUN --selection-id ref_classes --mode metadata --metadata-domain ref --metadata-column rlnClassNumber --split-by-value""",
     )
     common = parser.add_argument_group("Common inputs and naming")
-    common.add_argument("--run-dir", required=True, help="Existing cryoROLE run bundle directory.")
+    common.add_argument("--run-dir", help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.")
     common.add_argument("--selection-id", required=True, metavar="NAME",
                         help="Required user-chosen name, e.g. region_01. Saved under RUN/selections/NAME/. No default name.")
-    common.add_argument("--space", choices=("raw", "canonical"), default="raw",
+    common.add_argument("--space", choices=("raw", "canonical"), default="raw", action=_StoreExplicit,
                         help="Parent coordinate space. Default: raw.")
-    common.add_argument("--canonical-id", default="default", action=_StoreExplicit,
-                        help="Canonical landscape ID; only with --space canonical. Default: default.")
+    common.add_argument("--canonical-id", default=None, action=_StoreExplicit,
+                        help="Canonical frame; only with --space canonical. Omitted: the only frame in the bundle.")
     common.add_argument("--mode", dest="selection_mode",
                         choices=("radius", "threshold", "range", "random", "metadata"), default="radius",
                         help="radius: nearby orientations; threshold: SLD bounds; range: coordinate bounds; "
@@ -781,7 +876,7 @@ def _add_select_parser(subparsers, handlers) -> None:
     random = parser.add_argument_group("random mode", "Sample without replacement from all parent rows; "
                                        "ceil(fraction * row count) rows are selected. This creates a Selection, unlike visualization sampling.")
     random.add_argument("--fraction", type=float, help="Required fraction, 0 < F <= 1.")
-    random.add_argument("--seed", type=int, help="Non-negative random seed for reproducibility. Omitted: fresh randomness; recorded seed is null.")
+    random.add_argument("--seed", type=int, help="Non-negative random seed. Omitted: a seed is generated; either way it is recorded in selection.json.")
 
     metadata = parser.add_argument_group("metadata mode", "Use run-time CryoSPARC CS or RELION STAR metadata and recorded source-row provenance. "
                                          "CS supports scalar integers, booleans, and UTF-8 text; empty strings are excluded. "
@@ -809,11 +904,11 @@ def _add_export_parser(subparsers, handlers) -> None:
     )
     parser.add_argument(
         "--run-dir",
-        help="Existing cryoROLE run bundle directory; primary export input with --selection-id.",
+        help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.",
     )
     parser.add_argument(
         "--selection-id",
-        help="Selection ID under RUN/selections/; primary public input with --run-dir.",
+        help="Selection under RUN/selections/. Omitted: the only selection in the bundle.",
     )
     parser.add_argument(
         "--selection",
@@ -854,11 +949,11 @@ def _add_export_parser(subparsers, handlers) -> None:
     )
     selection_parser.add_argument(
         "--run-dir",
-        help="Existing cryoROLE run bundle directory; primary export input with --selection-id.",
+        help="Run bundle. Omitted: the current directory if it is a bundle, else ./cryorole_outputs.",
     )
     selection_parser.add_argument(
         "--selection-id",
-        help="Selection ID under RUN/selections/; primary public input with --run-dir.",
+        help="Selection under RUN/selections/. Omitted: the only selection in the bundle.",
     )
     selection_parser.add_argument(
         "--domain",

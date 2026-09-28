@@ -92,13 +92,25 @@ def align_command(args) -> int:
     return 0
 
 
+def _resolve_export_ids(args) -> None:
+    """Fill in --run-dir / --selection-id unless an explicit selection.json path is used."""
+
+    if getattr(args, "selection", None):
+        return
+    from cryorole.cli.resolution import resolve_cli_ids
+
+    resolve_cli_ids(args, selection="required")
+
+
 def export_selection_command(args) -> int:
+    _resolve_export_ids(args)
     if getattr(args, "run_dir", None):
         return export_metadata_command(args)
     return _export_selection_artifact_command(args)
 
 
 def export_metadata_command(args) -> int:
+    _resolve_export_ids(args)
     if getattr(args, "selection", None) and not getattr(args, "run_dir", None):
         return _export_selection_artifact_command(args)
     _validate_export_selection_inputs(args)
@@ -116,6 +128,7 @@ def export_metadata_command(args) -> int:
             relocated_ref=getattr(args, "relocated_ref", None),
             relocated_mov=getattr(args, "relocated_mov", None),
             allow_unverified_source=bool(getattr(args, "allow_unverified_source", False)),
+            resolved_by=getattr(args, "resolved_by", None),
         ),
         selection_path=selection_path,
     )

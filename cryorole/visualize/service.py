@@ -7,7 +7,6 @@ from dataclasses import dataclass, fields, replace
 import json
 from pathlib import Path
 import shutil
-import sys
 from typing import Any
 
 import numpy as np
@@ -27,6 +26,7 @@ from cryorole.io.writers.landscape_store import landscape_from_arrays, read_land
 from cryorole.models.landscape import Landscape
 from cryorole.models.landscape_arrays import LandscapeArrays
 from cryorole.run_bundle import validate_completed_run_bundle
+from cryorole.logs import warn_user
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,8 @@ class VisualizationRequest:
     overwrite: bool = False
     coordinate_source: str = "analysis"
     euler_convention: str | None = None
+    # How omitted --run-dir / --canonical-id / --selection-id were filled in.
+    resolved_by: dict[str, dict[str, str]] | None = None
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "VisualizationRequest":
@@ -1319,6 +1321,7 @@ def _visualization_public_report(
             "source_landscape_path": str(source_landscape_path),
             "space": args.space,
             "canonical_id": args.canonical_id if args.space == "canonical" else None,
+            "resolved_by": dict(getattr(args, "resolved_by", None) or {}),
             "visual_id": args.visual_id,
             "coordinate_source_resolved": [_coordinate_source_for_landscape(args)],
             "coordinate_sources": [_coordinate_source_for_landscape(args)],
@@ -1648,10 +1651,9 @@ def _resolve_landscape_euler_metadata(
     )
     metadata = resolved.metadata(euler_angle_columns=columns)
     if warn_on_legacy_missing:
-        print(
-            "[cryorole] warning: parent landscape lacks Euler convention metadata; "
-            f"defaulting to {DEFAULT_EULER_CONVENTION} for derived Euler coordinates.",
-            file=sys.stderr,
+        warn_user(
+            "parent landscape lacks Euler convention metadata; "
+            f"defaulting to {DEFAULT_EULER_CONVENTION} for derived Euler coordinates."
         )
     return metadata
 

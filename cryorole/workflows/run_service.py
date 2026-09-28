@@ -46,7 +46,7 @@ from cryorole.workflows.input_policy import (
     resolve_input_policies,
 )
 from cryorole.workflows.pipeline_runner import PipelineRunner
-from cryorole.workflows.progress import ProgressReporter
+from cryorole.workflows.progress import CancelToken, ProgressCallback, ProgressReporter
 from cryorole.workflows.run_pipeline import (
     compute_relative_orientation_arrays,
     preflight_and_normalize_matched_arrays,
@@ -116,6 +116,9 @@ class RunExecutionContext:
 
     runner: PipelineRunner | None = None
     allow_unverified_test_sources: bool = False
+    progress: ProgressCallback | None = None
+    cancel_token: CancelToken | None = None
+    stream_progress: bool = True
 
 
 @dataclass(frozen=True)
@@ -181,6 +184,8 @@ def execute_run(
             context=context,
             bundle_writer=bundle_writer,
         )
+        if context.cancel_token is not None:
+            context.cancel_token.raise_if_cancelled("publishing the run bundle")
         bundle_writer.commit()
     return replace(result, output_dir=final_output_dir)
 
@@ -222,6 +227,7 @@ def _preflight_request_from_args(
         mapping_file=getattr(args, "mapping_file", None),
         resolved_input_policies=resolved_input_policies,
         same_file_policy=same_file_policy,
+        check_environment=False,
     )
 
 
@@ -242,6 +248,9 @@ def _run_command_impl(
         verbose=args.verbose,
         profile_time=args.profile_time,
         profile_memory=args.profile_memory,
+        stream=None if context.stream_progress else False,
+        callback=context.progress,
+        cancel_token=context.cancel_token,
     )
     reporter.sample_memory("start")
     reporter.info(

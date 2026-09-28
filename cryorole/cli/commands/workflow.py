@@ -60,10 +60,28 @@ def preflight_command(args) -> int:
     return result.exit_code
 
 
+# ``status`` / ``next`` exit with this code when the bundle cannot be used
+# (missing, failed or incomplete); 1 and 2 stay reserved for errors.
+BUNDLE_NOT_USABLE_EXIT = 3
+_UNUSABLE_BUNDLE_STATES = {"missing", "failed", "incomplete"}
+
+
+def _bundle_exit_code(status: dict[str, Any]) -> int:
+    return BUNDLE_NOT_USABLE_EXIT if status.get("bundle_status") in _UNUSABLE_BUNDLE_STATES else 0
+
+
+def _resolve_status_run_dir(args) -> None:
+    from cryorole.cli.resolution import resolve_cli_ids
+
+    resolve_cli_ids(args)
+
+
 def status_command(args) -> int:
+    _resolve_status_run_dir(args)
     status = inspect_run_status(args.run_dir)
+    status["resolved_by"] = getattr(args, "resolved_by", {})
     if emit_optional_json(status, getattr(args, "json_output", None)):
-        return 0
+        return _bundle_exit_code(status)
     print(f"{status['bundle_status'].upper()} — {status['run_dir']}")
     if status.get("run_id"):
         print(f"Run ID: {status['run_id']}")
@@ -78,11 +96,13 @@ def status_command(args) -> int:
     )
     for warning in status.get("warnings", []):
         print(f"WARNING: {warning}")
-    return 0
+    return _bundle_exit_code(status)
 
 
 def next_command(args) -> int:
+    _resolve_status_run_dir(args)
     status = inspect_run_status(args.run_dir)
+    status["resolved_by"] = getattr(args, "resolved_by", {})
     actions = derive_next_actions(status)
     payload = {
         "artifact_type": "cryorole_next_actions",
@@ -91,12 +111,12 @@ def next_command(args) -> int:
         "actions": actions,
     }
     if emit_optional_json(payload, getattr(args, "json_output", None)):
-        return 0
+        return _bundle_exit_code(status)
     print(f"{status['bundle_status'].upper()} — recommended next actions")
     for index, action in enumerate(actions, start=1):
         print(f"{index}. {action['category'].upper()}: {action['reason']}")
         print(f"   {action['command']}")
-    return 0
+    return _bundle_exit_code(status)
 
 
 def guide_command(args, *, parser_factory: Callable[[], Any] | None = None) -> int:
@@ -151,6 +171,9 @@ def guide_command(args, *, parser_factory: Callable[[], Any] | None = None) -> i
 
 
 def explore_command(args) -> int:
+    from cryorole.cli.resolution import resolve_cli_ids
+
+    resolve_cli_ids(args, canonical=True)
     session = ExploreSession(
         args.run_dir,
         space=args.space,

@@ -63,6 +63,15 @@ Canonicalization, visualization, selection, and export already have a working co
 - Formal run consumption must revalidate source content identity, not only size and modification time.
 - CLI select and interactive Confirm must use the same standard Selection artifact writer.
 
+### Frontends: CLI and `cryorole.api`
+
+- Library code outside `cryorole/cli/` never calls `print`, `sys.exit`, `input` or `argparse` (enforced by `tests/architecture/test_service_boundaries.py`; the legacy script `workflows/rotate_landscape.py` is the only listed exception). User-relevant warnings go through `cryorole.logs.warn_user` / `notify_user`; progress goes through `ProgressReporter` (stderr for the CLI, a callback for the API).
+- `cryorole.api` calls the same typed services as the CLI and must not import `cryorole.cli`. It never prints; it raises `CryoroleError(code, message, remedy)` for user-actionable problems.
+- Long operations accept a `CancelToken`, checked at stage boundaries; a cancelled run publishes nothing and leaves no staging or failed bundle.
+- Omitted `--run-dir` / `--canonical-id` / `--selection-id` are resolved only by `cryorole.workflow.resolve`, and only when exactly one candidate exists (run dir: current directory bundle, then `./cryorole_outputs`). Never pick one of several; list them. Print every implicit value and record it under `resolved_by` in the written report. `select` always requires an explicit `--selection-id`.
+- The CLI error boundary prints `cryorole: error: …` plus `what to do: …` and exits 2 (1 for internal errors, 130 for Ctrl-C); `status`/`next` exit 3 for missing, failed or incomplete bundles; `preflight` keeps its 0/1/2 readiness codes.
+- Option synonyms are hidden aliases; each option has one visible spelling.
+
 ---
 
 ## Non-negotiable scientific invariants
@@ -176,7 +185,7 @@ RO = R_ref^-1 R_mov
 - Do not use naive Euler-space Euclidean distance for scientific radius selection.
 - Euler center input or Euler range selection must record and obey the explicit Euler convention policy.
 - Top-density selection defaults to including all rows, including display-only SLD outliers; excluding display outliers must be an explicit selection policy and recorded.
-- Random-fraction selection is allowed only as an explicit selection mode with a recorded fraction, seed, candidate count, and selected count.
+- Random-fraction selection is allowed only as an explicit selection mode with a recorded fraction, seed, candidate count, and selected count. When `--seed` is omitted a seed is generated and recorded (`random_seed_source: generated`); a random selection never records a null seed.
 - Source-metadata selection is allowed only against the run-time ref/mov source metadata, using recorded `ref_source_row_id` or `mov_source_row_id`; the metadata domain, column, selected values, and source-row policy must be recorded.
 - Public metadata value selection may accept comma-separated values such as `--metadata-value 1,3`.
 - Metadata split selection may create one selection per unique metadata value, but each child selection must remain a standard selection artifact and preserve export backtracking.

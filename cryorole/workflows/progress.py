@@ -3,17 +3,73 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import ctypes
 import os
 from pathlib import Path
 import sys
 from time import perf_counter
-from typing import Any, Iterator, TextIO
+import threading
+from typing import Any, Callable, Iterator, TextIO
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """One progress notification delivered to an API ``progress`` callback.
+
+    ``kind`` is ``stage_start``, ``stage_done``, ``batch``,
+    ``info`` or ``warning``. ``fraction`` is ``processed / total`` for batch
+    events and ``None`` otherwise.
+    """
+
+    command: str
+    kind: str
+    stage: str | None
+    message: str
+    stage_number: int | None = None
+    stage_total: int | None = None
+    processed: int | None = None
+    total: int | None = None
+    elapsed_sec: float | None = None
+
+    @property
+    def fraction(self) -> float | None:
+        if self.processed is None or not self.total:
+            return None
+        return self.processed / self.total
+
+
+ProgressCallback = Callable[[ProgressEvent], None]
+
+
+class CancelToken:
+    """Thread-safe cancellation flag checked at stage and batch boundaries."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self, stage: str | None = None) -> None:
+        if self._event.is_set():
+            from cryorole.errors import CancelledError
+
+            raise CancelledError(stage)
 
 
 class ProgressReporter:
-    """Small stderr reporter with optional timing and RSS profiling."""
+    """Stage reporter with optional stderr text, API callback, cancel token and profiling.
+
+    With ``stream=False`` nothing is written to any stream (API use); the
+    ``callback`` still receives every event and warnings go to the
+    ``cryorole`` logger.
+    """
 
     def __init__(
         self,
@@ -23,14 +79,19 @@ class ProgressReporter:
         verbose: bool = False,
         profile_time: bool = False,
         profile_memory: bool = False,
-        stream: TextIO | None = None,
+        stream: TextIO | None | bool = None,
+        callback: ProgressCallback | None = None,
+        cancel_token: CancelToken | None = None,
     ) -> None:
         self.command = command
         self.quiet = quiet
         self.verbose = verbose
         self.profile_time = profile_time
         self.profile_memory = profile_memory
-        self.stream = stream or sys.stderr
+        self.stream = None if stream is False else (stream or sys.stderr)
+        self.callback = callback
+        self.cancel_token = cancel_token
+        self._current_stage: str | None = None
         self._start_time = perf_counter()
         self._stages: list[dict[str, Any]] = []
         self._memory_samples: list[dict[str, Any]] = []
@@ -44,8 +105,10 @@ class ProgressReporter:
         stage_total: int | None = None,
         detail: str | None = None,
     ) -> None:
-        """Emit a stage-start progress line."""
+        """Emit a stage-start progress line (and honour cancellation)."""
 
+        self.check_cancelled(label)
+        self._notify("stage_start", label, label, stage_number=stage_number, stage_total=stage_total)
         if self.quiet:
             return
         prefix = (
@@ -59,6 +122,7 @@ class ProgressReporter:
     def stage_done(self, label: str, *, elapsed_sec: float, detail: str | None = None) -> None:
         """Emit a stage completion line."""
 
+        self._notify("stage_done", label, f"{label} completed", elapsed_sec=elapsed_sec)
         if self.quiet:
             return
         suffix = f": {detail}" if detail else ""
@@ -117,8 +181,10 @@ class ProgressReporter:
             self.stage_done(done_label or label, elapsed_sec=elapsed, detail=_detail(stage_metadata))
 
     def batch_update(self, name: str, processed: int, total: int) -> None:
-        """Emit an approximate batch update when measurable."""
+        """Emit an approximate batch update when measurable (and honour cancellation)."""
 
+        self.check_cancelled(name)
+        self._notify("batch", name, f"{name}: {processed} / {total}", processed=processed, total=total)
         if self.quiet or total <= 0:
             return
         elapsed = max(perf_counter() - self._start_time, 1e-9)
@@ -131,6 +197,8 @@ class ProgressReporter:
     def info(self, message: str, *, verbose_only: bool = False) -> None:
         """Emit an informational progress line."""
 
+        if not verbose_only or self.verbose:
+            self._notify("info", None, message)
         if self.quiet or (verbose_only and not self.verbose):
             return
         self._emit(message)
@@ -138,7 +206,24 @@ class ProgressReporter:
     def warning(self, message: str) -> None:
         """Emit a warning even in quiet mode."""
 
+        self._notify("warning", None, message)
+        if self.stream is None:
+            from cryorole.logs import warn_user
+
+            warn_user(message)
+            return
         self._emit(f"warning: {message}")
+
+    def check_cancelled(self, stage: str | None = None) -> None:
+        """Raise ``CancelledError`` if the caller's cancel token was triggered."""
+
+        if self.cancel_token is not None:
+            self.cancel_token.raise_if_cancelled(stage)
+
+    def _notify(self, kind: str, stage: str | None, message: str, **fields: Any) -> None:
+        if self.callback is None:
+            return
+        self.callback(ProgressEvent(command=self.command, kind=kind, stage=stage, message=message, **fields))
 
     def sample_memory(self, stage: str) -> None:
         """Record and optionally emit an RSS memory sample."""
@@ -187,6 +272,8 @@ class ProgressReporter:
         }
 
     def _emit(self, message: str) -> None:
+        if self.stream is None:
+            return
         self.stream.write(f"[{self.command}] {message}\n")
         self.stream.flush()
 

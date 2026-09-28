@@ -290,8 +290,9 @@ def test_export_help_documents_public_and_advanced_inputs(capsys) -> None:
         "--output-dir",
     ):
         assert option in help_text
-    assert "primary export" in help_text
-    assert "input with --selection-id" in help_text
+    flat = " ".join(help_text.split())
+    assert "Omitted: the only selection in the bundle" in flat
+    assert "cryorole export --run-dir my_run --selection-id region_01" in help_text
     assert "Advanced: direct path to a selection.json artifact" in help_text
     assert "RUN/exports/<selection_id>/" in help_text
     assert "source, run, and selection files are unchanged" in help_text
@@ -406,15 +407,16 @@ def test_export_metadata_command_does_not_reselect(tmp_path, monkeypatch) -> Non
     assert export_metadata_command(args) == 0
 
 
-def test_export_missing_selection_input_errors_are_actionable(tmp_path) -> None:
+def test_export_missing_selection_input_errors_are_actionable(tmp_path, monkeypatch) -> None:
     parser = build_parser()
 
     missing_selection_id = parser.parse_args(["export", "--run-dir", str(tmp_path / "run")])
-    with pytest.raises(ValueError, match="Provide --run-dir RUN --selection-id ID"):
+    with pytest.raises(ValueError, match="has no selections yet"):
         export_metadata_command(missing_selection_id)
 
+    monkeypatch.chdir(tmp_path)
     missing_run_dir = parser.parse_args(["export", "--selection-id", "sel"])
-    with pytest.raises(ValueError, match="Provide --run-dir RUN --selection-id ID"):
+    with pytest.raises(ValueError, match="No --run-dir given"):
         export_metadata_command(missing_run_dir)
 
 

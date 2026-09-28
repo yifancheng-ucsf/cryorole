@@ -63,6 +63,10 @@ Run revalidates source identity and publishes the bundle transactionally.
 canonical frames, visualizations, selections, and exports. `next` produces
 exact commands labelled required, recommended, or optional. It does not treat
 a visualization as a selection, and it does not require canonicalization.
+Both exit with status 3 when the bundle is missing, failed or incomplete, so a
+script can stop early. From inside `my_run` (or with the default
+`cryorole_outputs`), `--run-dir` can be omitted; cryoROLE prints which bundle it
+used.
 
 ## 4. Raw and canonical coordinates
 

@@ -59,9 +59,12 @@ def fix_subtract_coordinates(
     apply_to: str | Path | None = None,
     output_dir: str | Path | None = None,
     overwrite: bool = False,
-    log=print,
+    log=None,
 ) -> dict[str, Any]:
     """Correct the stale coordinates of a recentred RELION subtraction (see module docstring)."""
+
+    if log is None:
+        from cryorole.logs import notify_user as log
 
     target_path = Path(target)
     if target_path.is_dir():
