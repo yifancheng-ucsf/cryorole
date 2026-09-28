@@ -38,6 +38,28 @@ class ConventionPolicy:
 
         return cls(source_software="relion", source_euler_sequence="ZYZ")
 
+    @classmethod
+    def cryosparc_default(cls) -> "ConventionPolicy":
+        """Return the required CryoSPARC ``alignments3D/pose`` convention policy.
+
+        CryoSPARC stores an axis-angle vector (radians) describing the rotation
+        applied during back-projection (image to volume); RELION's Rot/Tilt/Psi
+        describe the opposite direction (reference volume to particle image).
+        The two matrices are therefore transposes of each other. cryoROLE uses
+        the pyem ``csparc2star.py`` mapping, so a ``.cs`` input gives the same
+        internal active matrix as its pyem-converted STAR through the RELION
+        bridge.
+        """
+
+        return cls(
+            source_software="cryosparc",
+            source_euler_sequence="rotvec",
+            source_semantics="backprojection",
+            internal_semantics="active",
+            degrees=False,
+            conversion_rule="active_matrix = scipy Rotation.from_rotvec(pose).as_matrix().T",
+        )
+
 
 @dataclass(frozen=True)
 class IdentityPolicy:

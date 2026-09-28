@@ -47,6 +47,24 @@ matching, resolved policies, and important output paths.
 Provides a short human guide to the run outputs, quick-look figures, warnings,
 and next commands. JSON reports and the manifest remain authoritative.
 
+### Input sanity
+
+Every run reports the RO-angle distribution (median, 90th and 99th percentile)
+in `run_report.md` under "Input sanity" and in `run_summary.json` under
+`input_sanity`. Warnings appear only for patterns that usually mean an input
+mistake; the thresholds are heuristics and are recorded in
+`input_sanity.policy`. They never change the analysis.
+
+| Code | Level | Trigger |
+| --- | --- | --- |
+| `SAME_INPUT_FILE` | strong warning (blocked in `preflight`) | `--ref` and `--mov` resolve to the same path or have the same SHA-256 |
+| `IDENTICAL_POSES` | strong warning | at least 99% of particles have an RO angle below 1e-6 rad |
+| `NEARLY_IDENTICAL_ORIENTATIONS` | warning | median RO angle below 1° and 99th percentile below 2° |
+
+If every particle has the same RO, the local density is undefined and `run`
+stops before writing a landscape, with the input-sanity explanation as the
+error message.
+
 New summaries and manifests share a unique `run_id` and a ref/mov
 `source_identities` mapping containing the original path, run-resolved absolute
 path, source type, file size, mtime, streamed SHA-256, and source row count.
@@ -194,7 +212,11 @@ rewrite source poses with display/canonical coordinates.
 
 Before subset writing, export verifies the current source against the recorded
 SHA-256. `export_report.json` records per-domain verification and relocation
-status. A missing original can be replaced only with explicit
+status. Export also checks that the source particle table still has the row
+count the run recorded (`source_row_count_verified` in each domain report) and
+refuses to export on a mismatch. STAR subsets always come from the loop in the
+`data_particles` block; other blocks (optics, tomograms) are copied verbatim.
+A missing original can be replaced only with explicit
 `--relocated-ref` / `--relocated-mov` whose hash matches. Legacy bundles without
 hashes require `--allow-unverified-source`, and that decision is recorded.
 
@@ -220,6 +242,15 @@ record the resolved Euler convention.
 
 The scientific SLD density value used by default selection and canonicalization
 policies.
+
+`sld_unfloored`
+
+SLD without the distance floor. A particle whose k nearest neighbours all have
+exactly its RO (for example duplicated particles, symmetry expansion, or a rigid
+subpopulation larger than k) has zero local distance and `+inf` here; the count
+is `n_inf_sld_unfloored` in `reports/density_report.json` and is explained in
+`run_report.md`. `sld_raw` stays finite because of the distance floor. NaN is
+never a valid SLD value.
 
 `sld_display`
 

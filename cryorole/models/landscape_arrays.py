@@ -6,6 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# SLD is ``global_local_k_mean / local_k_mean``. A particle whose k nearest
+# neighbours all coincide with it (identical RO, e.g. duplicated particles or
+# a genuinely rigid subpopulation larger than k) has zero local distance and
+# therefore +inf SLD. That is a defined, reported value
+# (``DensityReport.n_inf_sld_*``), not corrupt data, so these fields accept
+# +inf. NaN and -inf are still rejected.
+SLD_FIELDS_ALLOWING_POSINF = frozenset({"sld_unfloored", "sld_raw", "sld_display"})
+
 
 @dataclass(frozen=True)
 class LandscapeArrays:
@@ -67,7 +75,13 @@ class LandscapeArrays:
             object.__setattr__(
                 self,
                 field_name,
-                _one_dimensional_array(getattr(self, field_name), field_name, n_points, float),
+                _one_dimensional_array(
+                    getattr(self, field_name),
+                    field_name,
+                    n_points,
+                    float,
+                    allow_posinf=field_name in SLD_FIELDS_ALLOWING_POSINF,
+                ),
             )
         object.__setattr__(
             self,
@@ -119,10 +133,23 @@ def _coordinate_array(value, field_name: str, n_points: int) -> np.ndarray:
     return array
 
 
-def _one_dimensional_array(value, field_name: str, n_points: int, dtype) -> np.ndarray:
+def _one_dimensional_array(
+    value,
+    field_name: str,
+    n_points: int,
+    dtype,
+    *,
+    allow_posinf: bool = False,
+) -> np.ndarray:
     array = np.asarray(value, dtype=dtype)
     if array.shape != (n_points,):
         raise ValueError(f"{field_name} must have shape ({n_points},)")
-    if dtype is not bool and not np.isfinite(array).all():
-        raise ValueError(f"{field_name} contains non-finite values")
+    if dtype is not bool:
+        finite = np.isfinite(array)
+        if allow_posinf:
+            finite = finite | np.isposinf(array)
+        if not finite.all():
+            if allow_posinf:
+                raise ValueError(f"{field_name} contains NaN or -inf values")
+            raise ValueError(f"{field_name} contains non-finite values")
     return array

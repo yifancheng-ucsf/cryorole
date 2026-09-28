@@ -50,6 +50,7 @@ def _render_run_report(request: RunReportRequest) -> str:
         f"- Euler convention: `{summary.get('euler_convention')}`",
         f"- SLD: `{summary.get('resolved_sld_metric')}`, k={summary.get('k_neighbors')}",
         "",
+        *_input_sanity_lines(summary.get("input_sanity")),
         "## Core files",
         "",
         "- `data/raw_landscape.npz` — machine-readable landscape",
@@ -85,6 +86,22 @@ def _render_run_report(request: RunReportRequest) -> str:
             f">100={density.n_high_sld_points}/{density.n_points}, "
             f"distance-floored={density.n_floored_points}/{density.n_points}."
         )
+        if density.n_inf_sld_unfloored:
+            lines.extend(
+                [
+                    "",
+                    f"{density.n_inf_sld_unfloored}/{density.n_points} particles have all of their "
+                    f"k={density.effective_k_neighbors} nearest neighbours at exactly the same relative "
+                    "orientation, so their unfloored SLD (`sld_unfloored`) is +inf. "
+                    + (
+                        "`sld_raw` stays finite for them because of the distance floor. "
+                        if not density.n_inf_sld_raw
+                        else f"{density.n_inf_sld_raw} of them also have +inf `sld_raw`. "
+                    )
+                    + "This usually means duplicated particles, symmetry expansion, or a rigid "
+                    "subpopulation larger than k.",
+                ]
+            )
         diagnostic = density.ro_coordinate_diagnostics
         if diagnostic and diagnostic["severity"] == "info":
             lines.extend(["", str(diagnostic["message"])])
@@ -108,3 +125,22 @@ def _render_run_report(request: RunReportRequest) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _input_sanity_lines(sanity: Mapping[str, Any] | None) -> list[str]:
+    if not sanity:
+        return []
+    lines = ["## Input sanity", ""]
+    summary = sanity.get("ro_angle_summary") or {}
+    if summary.get("message"):
+        lines.append(str(summary["message"]))
+    findings = list(sanity.get("findings") or ())
+    if findings:
+        lines.append("")
+        for finding in findings:
+            label = "STRONG WARNING" if finding.get("level") == "strong_warning" else "WARNING"
+            lines.append(f"- **{label}** [{finding.get('code')}] {finding.get('message')}")
+    else:
+        lines.extend(["", "No input-sanity warnings (thresholds are heuristics recorded in `run_summary.json`)."])
+    lines.append("")
+    return lines

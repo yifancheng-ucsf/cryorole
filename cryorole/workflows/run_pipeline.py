@@ -233,7 +233,8 @@ def _normalize_rows(
         )
     if not np.isfinite(poses).all():
         raise ValueError(f"CryoSPARC {CRYOSPARC_POSE_FIELD} contains non-finite values")
-    return Rotation.from_rotvec(poses).as_matrix()
+    resolver = ConventionResolver(convention_policy or ConventionPolicy.cryosparc_default())
+    return resolver.rotvec_to_active_matrices(poses)
 
 
 def _validate_row_aligned_counts(

@@ -103,7 +103,11 @@ RO = R_ref^-1 R_mov
 - Default identity key is `uid`.
 - Native pose field is `alignments3D/pose`.
 - Native pose encoding is rotation vector / axis-angle.
-- Internal active matrices must be derived from `Rotation.from_rotvec(...).as_matrix()`.
+- The CryoSPARC pose is the back-projection rotation, the inverse of RELION's
+  reference-to-image rotation. Internal active matrices must be derived with the
+  pyem-consistent bridge `Rotation.from_rotvec(pose).as_matrix().T`, only through
+  `ConventionPolicy.cryosparc_default()` / `ConventionResolver`, and recorded in the
+  manifest. The golden test against pyem `csparc2star.py` output must keep passing.
 - Preserve vector-valued `.cs` fields without flattening them incorrectly.
 
 ### Matching

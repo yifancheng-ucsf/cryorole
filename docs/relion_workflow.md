@@ -89,7 +89,9 @@ cryorole run \
 ```
 
 In row-aligned mode, cryoROLE checks that the row counts match, pairs rows by
-index, and records the row-aligned policy.
+index, and records the row-aligned policy. Image names and coordinates are not
+compared, because they legitimately change after signal subtraction or
+re-extraction; the row order is the user's assertion.
 
 ## Preparing Aligned STAR Files
 

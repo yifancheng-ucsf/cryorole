@@ -112,4 +112,8 @@ def _resolve_identity_policy(
 
 
 def _convention_policy(source_type: str) -> ConventionPolicy | None:
-    return ConventionPolicy.relion_default() if source_type == "relion" else None
+    if source_type == "relion":
+        return ConventionPolicy.relion_default()
+    if source_type == "cryosparc":
+        return ConventionPolicy.cryosparc_default()
+    return None

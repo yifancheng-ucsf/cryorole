@@ -30,8 +30,9 @@ alignments/
 *.cs
 *.star
 
-# Future small fixtures/examples may opt in explicitly, for example:
-#!tests/fixtures/**
+# Small committed test fixtures opt in explicitly:
+!tests/fixtures/**
+# Future examples may opt in explicitly, for example:
 #!examples/**
 
 # OS files

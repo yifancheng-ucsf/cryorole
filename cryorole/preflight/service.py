@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 from typing import Any
 
+from cryorole.core.input_sanity import same_input_file
 from cryorole.export.serialization import to_json_safe
 from cryorole.models.policies import ConventionPolicy
 from cryorole.preflight.report import PREFLIGHT_SCHEMA_VERSION, PreflightResult
@@ -40,6 +41,9 @@ class PreflightRequest:
     identity_columns: tuple[str, ...] = ()
     mapping_file: str | Path | None = None
     resolved_input_policies: ResolvedInputPolicies | None = None
+    # "block": same ref/mov file is a preflight error (public ``preflight`` and
+    # ``run --dry-run``). "warn": recorded as a strong warning (production run).
+    same_file_policy: str = "block"
 
 
 def run_preflight(
@@ -59,6 +63,7 @@ def run_preflight(
     identity_reports: dict[str, object] = {}
     matching: dict[str, object] = {}
     conventions: dict[str, object] = {}
+    input_sanity: dict[str, object] = {"same_file": None}
     resolved = request.resolved_input_policies
 
     try:
@@ -82,6 +87,17 @@ def run_preflight(
                     source_type=source_types[domain],
                     row_count=-1,
                 ).to_dict()
+        same_file = same_input_file(
+            identities.get("ref"),
+            identities.get("mov"),
+            ref_path=request.ref,
+            mov_path=request.mov,
+        )
+        if same_file is not None:
+            input_sanity["same_file"] = same_file
+            if request.same_file_policy == "block":
+                raise ValueError(same_file["message"])
+            warnings.append(f"[{same_file['code']}] {same_file['message']}")
         ref_policy = resolved.identity_ref
         mov_policy = resolved.identity_mov
         conventions = {
@@ -198,6 +214,7 @@ def run_preflight(
         ),
         "identity_reports": identity_reports,
         "matching": matching,
+        "input_sanity": input_sanity,
         "run_policy": {
             "resolved_backend": "array_native" if request.run_backend == "auto" else request.run_backend,
             "k_neighbors": request.k_neighbors,
@@ -223,10 +240,10 @@ def _convention_record(source_type: str) -> dict[str, object]:
     if source_type == "relion":
         return asdict(ConventionPolicy.relion_default())
     return {
-        "source_software": "cryosparc",
+        **asdict(ConventionPolicy.cryosparc_default()),
         "pose_field": "alignments3D/pose",
         "pose_encoding": "rotation_vector_axis_angle",
-        "internal_semantics": "active",
+        "reference_implementation": "pyem csparc2star.py: rot2euler(expmap(pose))",
     }
 
 

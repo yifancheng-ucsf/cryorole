@@ -15,6 +15,22 @@ Performs source identity, convention, pose-schema, identity/matching, and
 resource checks without creating `RUN`. `--json` with no path writes JSON to
 stdout. Exit codes are 0 ready, 1 ready with warnings, and 2 blocked.
 
+Selecting the same file for `--ref` and `--mov` (same path, or a copy with the
+same SHA-256) is blocked before any matching. A formal `run` records the same
+finding as a strong warning and always reports the RO-angle summary and any
+input-sanity warnings (see `docs/output_files.md`, "Input sanity").
+
+`--row-aligned` is the user's assertion that row N is the same particle in both
+files. cryoROLE checks only that the row counts are equal and then pairs rows
+by index. It deliberately does not compare image names, coordinates, or any
+other column, because these can legitimately differ between the two
+refinements (for example after RELION signal subtraction or re-extraction).
+
+RELION STAR inputs: the particle table is the loop in the `data_particles`
+block (RELION 3.1+). A file with more than one `data_particles` loop is
+rejected rather than merged. `run`, metadata selection, and export all use this
+same rule.
+
 ## Run dry-run
 
 ```bash
@@ -79,6 +95,9 @@ cryorole visualize --run-dir RUN --view 3d
 cryorole select --run-dir RUN --selection-id ID --space SPACE -c A B C -r DEG
 cryorole export --run-dir RUN --selection-id ID --domain ref|mov|both
 ```
+
+`export` refuses to write a subset when the source particle table no longer has
+the row count recorded by the run.
 
 See `docs/architecture.md` for the stable artifact and scientific policy
 contract.

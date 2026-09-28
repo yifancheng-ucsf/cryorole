@@ -23,6 +23,7 @@ from cryorole.models.selection import Selection
 from cryorole.provenance import verify_source_identity
 from cryorole.run_bundle import validate_completed_run_bundle
 
+RELION_POSE_HEADERS = ("_rlnAngleRot", "_rlnAngleTilt", "_rlnAnglePsi")
 
 DOMAIN_ROW_ID_COLUMNS = {
     "ref": "ref_source_row_id",
@@ -373,9 +374,11 @@ def _resolve_and_verify_sources(
             else legacy_info.get(domain, {}).get("source_type")
         )
         resolved_path = Path(result.resolved_path)
+        recorded_row_count = record.get("row_count") if isinstance(record, Mapping) else None
         source_info[domain] = {
             "path": result.resolved_path,
             "source_type": _metadata_format_from_source_type(source_type, resolved_path),
+            "row_count": int(recorded_row_count) if recorded_row_count is not None else None,
         }
         verification[domain] = {
             "resolved_path": result.resolved_path,
@@ -509,6 +512,7 @@ def _export_domain_metadata(
     source_path = source_info.get(domain, {}).get("path")
     if not source_path:
         raise ValueError(f"Cannot locate original {domain} source metadata path")
+    expected_row_count = source_info.get(domain, {}).get("row_count")
     if resolved_format == "relion_star":
         output_path = domain_dir / f"selected_{domain}.star"
         result = write_relion_star_subset(
@@ -517,6 +521,8 @@ def _export_domain_metadata(
             row_ids,
             row_id_field=row_id_column,
             overwrite=overwrite,
+            expected_source_row_count=expected_row_count,
+            required_headers=RELION_POSE_HEADERS,
         )
         uid_output_path = None
     elif resolved_format == "cryosparc_cs":
@@ -529,6 +535,7 @@ def _export_domain_metadata(
             row_id_field=row_id_column,
             overwrite=overwrite,
             uid_output_path=uid_path,
+            expected_source_row_count=expected_row_count,
         )
         uid_output_path = result.uid_output_path
     else:
@@ -549,6 +556,7 @@ def _export_domain_metadata(
         "missing_row_ids": [],
         "out_of_bounds_row_ids": [],
         "uid_output_path": uid_output_path,
+        "source_row_count_verified": expected_row_count is not None,
         "source_file_unchanged": True,
         "warnings": list(result.warnings),
     }

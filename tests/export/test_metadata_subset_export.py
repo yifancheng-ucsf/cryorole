@@ -766,3 +766,33 @@ def test_existing_output_with_overwrite_preserves_inputs(tmp_path) -> None:
     assert selection_path.read_text(encoding="utf-8") == selection_before
     assert ref_path.read_text(encoding="utf-8") == ref_before
     assert mov_path.read_text(encoding="utf-8") == mov_before
+
+
+@pytest.mark.parametrize("suffix", [".star", ".cs"])
+def test_export_refuses_source_whose_row_count_differs_from_run_record(tmp_path, suffix) -> None:
+    run_dir, _ref_path, _mov_path, _selection_path = _make_run_bundle(
+        tmp_path, ref_suffix=suffix, mov_suffix=suffix
+    )
+    summary_path = run_dir / "run_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["source_identities"]["ref"]["row_count"] = 7
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="has 5 rows but the run recorded 7; refusing to export"):
+        export_selection_metadata_subset(
+            _make_selection(),
+            policy=SelectionMetadataExportPolicy(run_dir=run_dir, domain="ref", format="auto"),
+            selection_path=run_dir / "selections" / "sel" / "selection.json",
+        )
+
+
+def test_export_report_records_row_count_verification(tmp_path) -> None:
+    run_dir, _ref_path, _mov_path, _selection_path = _make_run_bundle(tmp_path)
+    report = export_selection_metadata_subset(
+        _make_selection(),
+        policy=SelectionMetadataExportPolicy(run_dir=run_dir, domain="ref", format="auto"),
+        selection_path=run_dir / "selections" / "sel" / "selection.json",
+    )
+    domain_report = json.loads(Path(report["domain_reports"]["ref"]).read_text(encoding="utf-8"))
+    assert domain_report["source_row_count_verified"] is True
+    assert domain_report["source_row_count"] == 5

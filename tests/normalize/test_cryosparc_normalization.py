@@ -18,7 +18,8 @@ def test_cryosparc_native_rotvec_pose_converts_to_active_matrix() -> None:
 
     pose_table = PoseNormalizer().normalize_cryosparc(particles, domain_name="domain-a")
 
-    expected = Rotation.from_rotvec(rotvec).as_matrix()
+    # pyem-consistent CryoSPARC bridge: the pose is the back-projection rotation.
+    expected = Rotation.from_rotvec(rotvec).as_matrix().T
     np.testing.assert_allclose(
         pose_table.data.loc[0, "rotation_matrix_active"],
         expected,

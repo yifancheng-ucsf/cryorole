@@ -32,13 +32,23 @@ def test_convention_resolver_rejects_non_uppercase_relion_sequence() -> None:
         ConventionResolver(policy)
 
 
-def test_convention_resolver_is_explicitly_relion_only_for_now() -> None:
+def test_convention_resolver_rejects_unknown_source_software() -> None:
+    policy = ConventionPolicy(
+        source_software="cistem",
+        source_euler_sequence="ZYZ",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported source software"):
+        ConventionResolver(policy)
+
+
+def test_convention_resolver_rejects_cryosparc_parsed_as_euler() -> None:
     policy = ConventionPolicy(
         source_software="cryosparc",
         source_euler_sequence="ZYZ",
     )
 
-    with pytest.raises(ValueError, match="Unsupported source software"):
+    with pytest.raises(ValueError, match="rotation vectors"):
         ConventionResolver(policy)
 
 

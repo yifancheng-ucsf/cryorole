@@ -593,8 +593,12 @@ def test_run_manifest_records_resolved_cryosparc_uid_and_core_policies(tmp_path)
     assert active_policies["identity_policy_ref"]["identity_mode"] == "cryosparc_uid"
     assert active_policies["identity_policy_mov"]["identity_mode"] == "cryosparc_uid"
     assert active_policies["identity_policy_ref"]["identity_columns"] == ["uid"]
-    assert active_policies["convention_policy_ref"] is None
-    assert active_policies["convention_policy_mov"] is None
+    for domain in ("ref", "mov"):
+        convention = active_policies[f"convention_policy_{domain}"]
+        assert convention["source_software"] == "cryosparc"
+        assert convention["conversion_rule"] == (
+            "active_matrix = scipy Rotation.from_rotvec(pose).as_matrix().T"
+        )
     assert active_policies["match_policy"]["join_type"] == "inner"
     assert active_policies["density_policy"]["k_neighbors"] == 50
     assert active_policies["density_policy"]["sld_metric"] == "rotvec_euclidean"
@@ -4230,3 +4234,35 @@ def test_select_complete_help_examples_write_standard_artifacts(tmp_path, capsys
     assert captured.out.strip() == str(run_dir / "selections" if split else paths[0])
     with pytest.raises(FileExistsError, match="Choose another --selection-id"):
         select_command(args)
+
+
+def test_row_aligned_pairs_by_row_without_comparing_names(tmp_path) -> None:
+    """--row-aligned is a user assertion: names may differ (e.g. after signal subtraction)."""
+
+    import json as _json
+
+    def _star(path, names, offset):
+        rows = [
+            f"{name} {10 * i + offset * (i % 3)} {20 + i + offset * (i % 2)} {30 + 2 * i}"
+            for i, name in enumerate(names)
+        ]
+        path.write_text(
+            "\n".join(["data_particles", "loop_", "_rlnImageName #1", "_rlnAngleRot #2",
+                       "_rlnAngleTilt #3", "_rlnAnglePsi #4", *rows, ""]),
+            encoding="utf-8",
+        )
+
+    ref, mov = tmp_path / "ref.star", tmp_path / "mov.star"
+    _star(ref, [f"{i}@orig.mrcs" for i in range(1, 7)], 0)
+    # Same particle order, but names differ and are even permuted relative to ref.
+    _star(mov, [f"{i}@subtracted.mrcs" for i in (2, 1, 3, 4, 6, 5)], 5)
+    out = tmp_path / "out"
+    args = build_parser().parse_args([
+        "run", "--ref", str(ref), "--mov", str(mov), "--output-dir", str(out),
+        "--k-neighbors", "2", "--no-visualize", "--row-aligned",
+    ])
+    assert run_command(args) == 0
+    summary = _json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["matched_count"] == 6
+    assert summary["matched_rows_reordered"] is False
+    assert not any("ROW_ALIGNED" in str(w) for w in summary["match_warnings"])
