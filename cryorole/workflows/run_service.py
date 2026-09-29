@@ -83,6 +83,10 @@ class RunRequest:
     manifest_output: str | None = None
     overwrite: bool = False
     no_visualize: bool = False
+    # Processes for the quick-look figures: None/"auto" or a positive integer.
+    jobs: int | str | None = None
+    # 2D projection drawing: "scatter" or "density" (see export.visualization.POINT_RENDERINGS).
+    point_style: str = "scatter"
     quiet: bool = False
     verbose: bool = False
     profile_time: bool = False
@@ -1244,6 +1248,8 @@ def _write_run_quicklook(
                 density_report.sld_display_outlier_threshold
                 if density_report is not None else None
             ),
+            jobs=getattr(args, "jobs", None),
+            point_rendering=getattr(args, "point_style", "scatter"),
         ),
     )
     return {

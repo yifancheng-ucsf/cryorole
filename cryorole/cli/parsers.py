@@ -325,6 +325,18 @@ def _add_run_parser(subparsers, handlers) -> None:
         help="Replace an existing --output-dir bundle (published only after the new run completes).",
     )
     parser.add_argument("--no-visualize", action="store_true", help="Skip raw quick-look visualization.")
+    parser.add_argument(
+        "--jobs",
+        type=_jobs_value,
+        default="auto",
+        help="Processes for the quick-look figures: 1-3 or auto. Default: auto (up to 3, limited by CPU cores and free memory; 1 below 100k particles).",
+    )
+    parser.add_argument(
+        "--point-style",
+        choices=("scatter", "density"),
+        default="scatter",
+        help="How 2D projection figures draw points: scatter (default; one marker per point) or density (one image cell per screen pixel holding the visible SLD value; about 15x faster at 500k points, near-identical look, slightly thinner in sparse regions).",
+    )
     parser.add_argument("--quiet", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument("--verbose", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument("--profile-time", action="store_true", help=_HIDDEN_HELP)
@@ -749,6 +761,18 @@ def _add_canonical_views_parser(subparsers, handlers) -> None:
     parser.set_defaults(handler=handlers["canonical_views"])
 
 
+def _jobs_value(text: str) -> int | str:
+    if text == "auto":
+        return text
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'auto'") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'auto'")
+    return value
+
+
 def _add_canonicalize_parser(subparsers, handlers) -> None:
     parser = subparsers.add_parser(
         "canonicalize",
@@ -829,6 +853,18 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
         "--projection-panels",
         action="store_true",
         help="Also write each 2D projection panel as its own PNG (18 extra figures). The 3-view figures already show every panel.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=_jobs_value,
+        default="auto",
+        help="Processes for the preview figures: 1-3 or auto. Default: auto (up to 3, limited by CPU cores and free memory; 1 below 100k particles).",
+    )
+    parser.add_argument(
+        "--point-style",
+        choices=("scatter", "density"),
+        default="scatter",
+        help="How 2D projection figures draw points: scatter (default; one marker per point) or density (one image cell per screen pixel holding the visible SLD value; about 15x faster at 500k points, near-identical look, slightly thinner in sparse regions).",
     )
     parser.set_defaults(handler=handlers["canonicalize"])
 

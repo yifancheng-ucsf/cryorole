@@ -21,6 +21,7 @@ from cryorole.core.display_policy import (
 )
 from cryorole.core.euler_conventions import DEFAULT_EULER_CONVENTION, LEGACY_MISSING_EULER_CONVENTION_SOURCE, RAW_EULER_ANGLE_COLUMNS, resolve_euler_convention
 from cryorole.export import read_landscape, read_selection_json, write_json_artifact, write_landscape_visualizations
+from cryorole.export.figure_jobs import resolve_figure_jobs, spawn_pool
 from cryorole.io.landscape_resolver import resolve_landscape_path
 from cryorole.io.writers.landscape_store import landscape_from_arrays, read_landscape_npz_arrays
 from cryorole.models.landscape import Landscape
@@ -97,6 +98,9 @@ class QuickLookRequest:
     sort_points_by_color: str | None = None
     axis_limits: dict[str, tuple[float | None, float | None] | None] | None = None
     tail_jump_threshold: float | None = None
+    # Processes for the three subsets: None/"auto" or a positive integer.
+    jobs: int | str | None = None
+    point_rendering: str = "scatter"
 
 
 @dataclass(frozen=True)
@@ -119,45 +123,46 @@ def write_quicklook(
     rendered_counts: dict[str, int] = {}
     base_report: dict[str, Any] | None = None
 
-    for subset_name, indices in subset_indices.items():
-        rendered = _deterministic_subset_sample(
+    rendered_by_subset = {
+        subset_name: _deterministic_subset_sample(
             indices,
             max_points=request.max_points_2d,
             random_seed=request.random_seed,
         )
-        subset_landscape = _quicklook_subset_landscape(landscape, rendered)
-        subset_report = write_landscape_visualizations(
-            subset_landscape,
-            output_dir,
-            overwrite=request.overwrite,
-            coordinate_source="analysis",
-            representation="both",
-            color_field=request.color_field,
-            euler_convention=request.euler_convention,
-            euler_convention_source=request.euler_convention_source,
-            euler_degrees=True,
-            display_density_field=request.display_density_field,
-            formats=("png",),
-            max_points_2d=None,
-            max_points_3d=1,
-            random_seed=request.random_seed,
-            write_projection_csvs=False,
-            output_prefix=f"{subset_name}_",
-            artifact_layout="run_bundle",
-            visual_style="legacy",
-            color_map=request.color_map,
-            color_vmin=request.color_vmin,
-            color_vmax=request.color_vmax,
-            point_size=request.point_size,
-            point_alpha=request.point_alpha,
-            figure_width=request.figure_width,
-            figure_height=request.figure_height,
-            colorbar_position=request.colorbar_position,
-            sort_points_by_color=request.sort_points_by_color,
-            axis_limits=request.axis_limits,
-            display_filter_mode="none",
-            output_profile="quicklook",
-        )
+        for subset_name, indices in subset_indices.items()
+    }
+    jobs = resolve_figure_jobs(
+        request.jobs,
+        n_tasks=len(rendered_by_subset),
+        n_points=max((int(r.size) for r in rendered_by_subset.values()), default=0),
+        worker_bytes_per_point=_QUICKLOOK_WORKER_BYTES_PER_POINT,
+        parallel_capable=isinstance(landscape, LandscapeArrays),
+    )
+    if jobs > 1:
+        # Each worker gets only its subset's compact arrays (cheap to pickle).
+        with spawn_pool(jobs) as pool:
+            futures = {
+                subset_name: pool.submit(
+                    _write_quicklook_subset_from_arrays,
+                    _take_landscape_arrays(landscape, rendered),
+                    output_dir,
+                    subset_name,
+                    request,
+                )
+                for subset_name, rendered in rendered_by_subset.items()
+            }
+            subset_reports = {name: future.result() for name, future in futures.items()}
+    else:
+        subset_reports = {
+            subset_name: _write_quicklook_subset(
+                _quicklook_subset_landscape(landscape, rendered), output_dir, subset_name, request
+            )
+            for subset_name, rendered in rendered_by_subset.items()
+        }
+
+    for subset_name, indices in subset_indices.items():
+        rendered = rendered_by_subset[subset_name]
+        subset_report = subset_reports[subset_name]
         if base_report is None:
             base_report = subset_report
         subset_counts[subset_name] = int(indices.size)
@@ -178,6 +183,8 @@ def write_quicklook(
         {
             "artifact_type": "run_quicklook",
             "output_profile": "quicklook",
+            "jobs": jobs,
+            "point_rendering": request.point_rendering,
             "report_path": None,
             "generated_files": generated_files,
             "generated_filenames": [Path(path).name for path in generated_files.values()],
@@ -236,6 +243,80 @@ def _deterministic_subset_sample(
         replace=False,
     )
     return np.sort(sampled)
+
+
+# Measured peak RSS per plotted point of one quick-look worker; caps automatic jobs.
+_QUICKLOOK_WORKER_BYTES_PER_POINT = 1_000
+
+
+def _take_landscape_arrays(arrays: LandscapeArrays, indices: np.ndarray) -> LandscapeArrays:
+    """Row subset of compact landscape arrays (per-landscape fields are kept as they are)."""
+
+    values: dict[str, Any] = {}
+    for field in fields(arrays):
+        value = getattr(arrays, field.name)
+        if value is None or field.name == "canonical_transform":
+            values[field.name] = value
+        else:
+            values[field.name] = np.asarray(value)[indices]
+    return LandscapeArrays(**values)
+
+
+def _write_quicklook_subset_from_arrays(
+    subset_arrays: LandscapeArrays,
+    output_dir: Path,
+    subset_name: str,
+    request: QuickLookRequest,
+) -> dict[str, Any]:
+    """Worker entry point for one quick-look subset."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    return _write_quicklook_subset(landscape_from_arrays(subset_arrays), output_dir, subset_name, request)
+
+
+def _write_quicklook_subset(
+    subset_landscape: Landscape,
+    output_dir: Path,
+    subset_name: str,
+    request: QuickLookRequest,
+) -> dict[str, Any]:
+    """Render the two 3-view triptychs of one quick-look subset."""
+
+    return write_landscape_visualizations(
+        subset_landscape,
+        output_dir,
+        overwrite=request.overwrite,
+        coordinate_source="analysis",
+        representation="both",
+        color_field=request.color_field,
+        euler_convention=request.euler_convention,
+        euler_convention_source=request.euler_convention_source,
+        euler_degrees=True,
+        display_density_field=request.display_density_field,
+        formats=("png",),
+        max_points_2d=None,
+        max_points_3d=1,
+        random_seed=request.random_seed,
+        write_projection_csvs=False,
+        output_prefix=f"{subset_name}_",
+        artifact_layout="run_bundle",
+        visual_style="legacy",
+        color_map=request.color_map,
+        color_vmin=request.color_vmin,
+        color_vmax=request.color_vmax,
+        point_size=request.point_size,
+        point_alpha=request.point_alpha,
+        figure_width=request.figure_width,
+        figure_height=request.figure_height,
+        colorbar_position=request.colorbar_position,
+        sort_points_by_color=request.sort_points_by_color,
+        axis_limits=request.axis_limits,
+        display_filter_mode="none",
+        output_profile="quicklook",
+        point_rendering=request.point_rendering,
+    )
 
 
 def _quicklook_subset_landscape(

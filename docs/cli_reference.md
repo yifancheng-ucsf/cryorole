@@ -169,6 +169,19 @@ cryorole export --run-dir RUN --selection-id ID --domain ref|mov|both
 completed and validated; `canonicalize --overwrite` replaces
 `canonical/<canonical-id>/` only.
 
+**Figure speed options** (`run` and `canonicalize`):
+
+- `--jobs auto|N` renders independent figure sets in separate processes
+  (`run`: the three quick-look subsets; `canonicalize`: the three display
+  sets). `auto` (default) uses up to 3, limited by CPU cores and free memory,
+  and stays at 1 below 100k particles. Output files are identical to `--jobs 1`;
+  each extra process needs memory (about 200 MiB + 1 KB per plotted particle).
+- `--point-style density` draws 2D projections as an image with one cell per
+  screen pixel holding the SLD value that would be visible there, instead of one
+  marker per point (`scatter`, default). About 15x faster at 500k points. The
+  picture is near-identical; sparse regions look slightly thinner because a
+  scatter marker (~1.4 px) also tints neighbouring pixels. 3D views keep markers.
+
 `export` refuses to write a subset when the source particle table no longer has
 the row count recorded by the run.
 

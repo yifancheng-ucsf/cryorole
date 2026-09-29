@@ -28,6 +28,7 @@ from cryorole.export import (
     write_landscape_visualizations,
     write_report_json,
 )
+from cryorole.export.figure_jobs import resolve_figure_jobs, spawn_pool
 from cryorole.export.serialization import to_json_safe
 from cryorole.io.landscape_resolver import resolve_landscape_path
 from cryorole.models.landscape import Landscape
@@ -60,6 +61,10 @@ class CanonicalizeRequest:
     csv_chunk_size: int = 100_000
     # Separate per-panel projection PNGs; each panel is already in the 3-view figure.
     projection_panels: bool = False
+    # Processes for the preview figures: None/"auto" or a positive integer.
+    jobs: int | str | None = None
+    # 2D projection drawing: "scatter" or "density".
+    point_style: str = "scatter"
     profile_memory: bool = False
     overwrite: bool = False
     # How an omitted --run-dir was filled in (cryorole.workflow.resolve).
@@ -265,10 +270,8 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
             )
             csv_backend = "array_native_chunked"
             memory_profiler.sample("canonical_csv_written")
-        visualization_landscape = _landscape_from_arrays_for_visualization(
-            canonical_arrays,
-            canonicalization_report=canonicalization_report,
-        )
+        visualization_landscape = None  # built on demand from canonical_arrays
+        visualization_arrays = canonical_arrays
         canonical_transform = canonical_arrays.canonical_transform
     else:
         canonicalization_backend = "dataframe_compat"
@@ -305,6 +308,7 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
             csv_backend = "dataframe_compat"
             memory_profiler.sample("canonical_csv_written")
         visualization_landscape = canonical_landscape
+        visualization_arrays = None
         canonical_transform = canonical_landscape.canonical_transform
 
     if canonical_transform is None:
@@ -350,12 +354,21 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
         output_artifacts["memory_profile_json"] = str(memory_profile_path)
     visualization_performed = False
     visualization_report_path = None
+    preview_jobs = None
     if args.no_visualize:
         pass
     else:
+        preview_jobs = _resolve_preview_jobs(
+            args.jobs,
+            n_points=output_row_count,
+            parallel_capable=visualization_arrays is not None,
+        )
         visualization_report = _write_canonical_default_visualization(
             args=args,
             canonical_landscape=visualization_landscape,
+            canonical_arrays=visualization_arrays,
+            canonical_landscape_npz_path=Path(canonical_landscape_path),
+            jobs=preview_jobs,
             canonical_landscape_csv_path=canonical_landscape_csv_path,
             euler_metadata=euler_metadata,
             fit_top_fraction=policy.fit_top_fraction,
@@ -403,6 +416,8 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
             "visualization_performed": visualization_performed,
             "visualization_report": visualization_report_path,
             "projection_panels_performed": bool(visualization_performed and args.projection_panels),
+            "preview_jobs": preview_jobs if visualization_performed else None,
+            "point_style": args.point_style if visualization_performed else None,
             "memory_profile_performed": args.profile_memory,
             "memory_profile": str(memory_profile_path) if args.profile_memory else None,
             "selection_performed": False,
@@ -729,7 +744,10 @@ def _landscape_from_arrays_for_visualization(
 def _write_canonical_default_visualization(
     *,
     args,
-    canonical_landscape: Landscape,
+    canonical_landscape: Landscape | None,
+    canonical_arrays: LandscapeArrays | None = None,
+    canonical_landscape_npz_path: Path | None = None,
+    jobs: int = 1,
     canonical_landscape_csv_path: Path | None,
     euler_metadata: dict[str, object],
     fit_top_fraction: float,
@@ -774,63 +792,42 @@ def _write_canonical_default_visualization(
     full_landscape_table = (
         str(canonical_landscape_csv_path) if canonical_landscape_csv_path is not None else None
     )
-    for spec in preview_specs:
+    group_options = {
+        "overwrite": overwrite,
+        "euler_convention_source": str(euler_metadata["euler_convention_source"]),
+        "full_landscape_table": full_landscape_table,
+        "projection_panels": bool(args.projection_panels),
+        "point_rendering": str(args.point_style),
+    }
+    if jobs > 1 and canonical_landscape_npz_path is not None:
+        # Independent display sets render in separate processes. Each worker reads
+        # the canonical NPZ just written, so nothing large is pickled.
+        with spawn_pool(min(jobs, len(preview_specs))) as pool:
+            futures = [
+                pool.submit(
+                    _write_preview_group_from_npz,
+                    str(canonical_landscape_npz_path),
+                    str(output_dir / str(spec["label"])),
+                    dict(spec),
+                    group_options,
+                )
+                for spec in preview_specs
+            ]
+            reports = [future.result() for future in futures]
+    else:
+        if canonical_landscape is None:
+            if canonical_arrays is None:
+                raise ValueError("canonical preview needs a landscape or its arrays")
+            canonical_landscape = _landscape_from_arrays_for_visualization(
+                canonical_arrays,
+                canonicalization_report=None,
+            )
+        reports = [
+            _write_preview_group(canonical_landscape, output_dir / str(spec["label"]), spec, **group_options)
+            for spec in preview_specs
+        ]
+    for spec, report in zip(preview_specs, reports):
         label = str(spec["label"])
-        max_displayed_sld = max_displayed_density(
-            canonical_landscape.data["sld_raw"],
-            threshold=spec["display_sld_threshold"],
-            strict_threshold=True,
-        )
-        resolved_vmax = (
-            min(max_displayed_sld, 100.0) if max_displayed_sld is not None else None
-        )
-        color_vmax = resolved_vmax
-        if color_vmax is None and spec["display_sld_threshold"] is not None:
-            color_vmax = float(spec["display_sld_threshold"])
-        selection_metadata: dict[str, Any] = {
-            "preview_group": label,
-            "preview_description": spec["description"],
-            "preview_only": True,
-            "not_a_selection": True,
-            "display_filter_mode": spec["display_filter_mode"],
-            "display_vmax_cap": 100.0,
-            "display_vmax_policy": "min(max_displayed_sld, 100)",
-            "max_displayed_sld": max_displayed_sld,
-            "resolved_vmax": resolved_vmax,
-        }
-        if spec["display_sld_threshold"] is not None:
-            selection_metadata["display_sld_threshold"] = spec["display_sld_threshold"]
-            selection_metadata["display_filter_label"] = "sld_raw > 1.5"
-        if spec["display_top_fraction"] is not None:
-            selection_metadata["top_sld_fraction"] = spec["display_top_fraction"]
-            selection_metadata["fit_support_preview"] = True
-        report = write_landscape_visualizations(
-            canonical_landscape,
-            output_dir / label,
-            overwrite=overwrite,
-            coordinate_source="canonical",
-            representation="both",
-            color_field="sld_raw",
-            euler_convention=DEFAULT_EULER_CONVENTION,
-            euler_convention_source=str(euler_metadata["euler_convention_source"]),
-            display_top_fraction=spec["display_top_fraction"],
-            display_sld_threshold=spec["display_sld_threshold"],
-            display_density_field="sld_raw",
-            formats=("png",),
-            max_points_2d=500000,
-            max_points_3d=50000,
-            random_seed=0,
-            write_projection_csvs=False,
-            full_landscape_table=full_landscape_table,
-            display_table_filename="display_table.csv",
-            artifact_layout="run_bundle",
-            visual_style="legacy",
-            color_map="rainbow_r",
-            color_vmax=color_vmax,
-            display_filter_mode=str(spec["display_filter_mode"]),
-            selection_metadata=selection_metadata,
-            write_individual_projections=bool(args.projection_panels),
-        )
         preview_reports[label] = report
         generated_files[f"{label}_visualization_report_json"] = report["report_path"]
         for artifact_key, artifact_path in report["generated_files"].items():
@@ -855,6 +852,7 @@ def _write_canonical_default_visualization(
             label: report["report_path"] for label, report in preview_reports.items()
         },
         "generated_files": generated_files,
+        "preview_jobs": jobs,
         "warnings": warnings,
     }
     report_path = write_json_artifact(
@@ -864,6 +862,112 @@ def _write_canonical_default_visualization(
     )
     aggregate_report["report_path"] = str(report_path)
     return aggregate_report
+
+
+# Measured peak RSS per point of one canonical preview worker (it reads the
+# canonical NPZ and renders one display set); used to cap automatic --jobs.
+_PREVIEW_WORKER_BYTES_PER_POINT = 1_000
+
+
+def _resolve_preview_jobs(requested: int | str | None, *, n_points: int, parallel_capable: bool) -> int:
+    """Number of processes for the three canonical preview display sets."""
+
+    return resolve_figure_jobs(
+        requested,
+        n_tasks=3,
+        n_points=n_points,
+        worker_bytes_per_point=_PREVIEW_WORKER_BYTES_PER_POINT,
+        parallel_capable=parallel_capable,
+    )
+
+
+def _write_preview_group_from_npz(
+    npz_path: str,
+    group_dir: str,
+    spec: dict[str, Any],
+    group_options: dict[str, Any],
+) -> dict[str, Any]:
+    """Worker entry point: rebuild the canonical landscape from its NPZ and render one set."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    arrays = read_landscape_npz_arrays(npz_path)
+    landscape = _landscape_from_arrays_for_visualization(arrays, canonicalization_report=None)
+    return _write_preview_group(landscape, Path(group_dir), spec, **group_options)
+
+
+def _write_preview_group(
+    canonical_landscape: Landscape,
+    group_dir: Path,
+    spec: dict[str, Any],
+    *,
+    overwrite: bool,
+    euler_convention_source: str,
+    full_landscape_table: str | None,
+    projection_panels: bool,
+    point_rendering: str = "scatter",
+) -> dict[str, Any]:
+    """Render one canonical preview display set (all particles, SLD threshold or top fraction)."""
+
+    label = str(spec["label"])
+    max_displayed_sld = max_displayed_density(
+        canonical_landscape.data["sld_raw"],
+        threshold=spec["display_sld_threshold"],
+        strict_threshold=True,
+    )
+    resolved_vmax = (
+        min(max_displayed_sld, 100.0) if max_displayed_sld is not None else None
+    )
+    color_vmax = resolved_vmax
+    if color_vmax is None and spec["display_sld_threshold"] is not None:
+        color_vmax = float(spec["display_sld_threshold"])
+    selection_metadata: dict[str, Any] = {
+        "preview_group": label,
+        "preview_description": spec["description"],
+        "preview_only": True,
+        "not_a_selection": True,
+        "display_filter_mode": spec["display_filter_mode"],
+        "display_vmax_cap": 100.0,
+        "display_vmax_policy": "min(max_displayed_sld, 100)",
+        "max_displayed_sld": max_displayed_sld,
+        "resolved_vmax": resolved_vmax,
+    }
+    if spec["display_sld_threshold"] is not None:
+        selection_metadata["display_sld_threshold"] = spec["display_sld_threshold"]
+        selection_metadata["display_filter_label"] = "sld_raw > 1.5"
+    if spec["display_top_fraction"] is not None:
+        selection_metadata["top_sld_fraction"] = spec["display_top_fraction"]
+        selection_metadata["fit_support_preview"] = True
+    report = write_landscape_visualizations(
+        canonical_landscape,
+        group_dir,
+        overwrite=overwrite,
+        coordinate_source="canonical",
+        representation="both",
+        color_field="sld_raw",
+        euler_convention=DEFAULT_EULER_CONVENTION,
+        euler_convention_source=euler_convention_source,
+        display_top_fraction=spec["display_top_fraction"],
+        display_sld_threshold=spec["display_sld_threshold"],
+        display_density_field="sld_raw",
+        formats=("png",),
+        max_points_2d=500000,
+        max_points_3d=50000,
+        random_seed=0,
+        write_projection_csvs=False,
+        full_landscape_table=full_landscape_table,
+        display_table_filename="display_table.csv",
+        artifact_layout="run_bundle",
+        visual_style="legacy",
+        color_map="rainbow_r",
+        color_vmax=color_vmax,
+        display_filter_mode=str(spec["display_filter_mode"]),
+        selection_metadata=selection_metadata,
+        write_individual_projections=projection_panels,
+        point_rendering=point_rendering,
+    )
+    return report
 
 
 def _canonical_visualization_output_dir(args) -> Path:
