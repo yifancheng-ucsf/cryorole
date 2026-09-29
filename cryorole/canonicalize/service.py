@@ -53,8 +53,13 @@ class CanonicalizeRequest:
     legacy_positive_side: str | None = None
     use_frame: str | None = None
     no_visualize: bool = False
+    # canonical_landscape.csv is opt-in: the NPZ holds the same data.
+    write_csv: bool = False
+    # Deprecated: the CSV is skipped by default now; kept so old scripts still run.
     no_csv: bool = False
     csv_chunk_size: int = 100_000
+    # Separate per-panel projection PNGs; each panel is already in the 3-view figure.
+    projection_panels: bool = False
     profile_memory: bool = False
     overwrite: bool = False
     # How an omitted --run-dir was filled in (cryorole.workflow.resolve).
@@ -250,7 +255,7 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
         memory_profiler.sample("canonical_npz_written")
         canonical_landscape_csv_path = None
         csv_backend = "skipped"
-        if not args.no_csv:
+        if args.write_csv and not args.no_csv:
             canonical_landscape_csv_path = write_canonical_landscape_csv_from_npz(
                 canonical_landscape_path,
                 output_dir / "canonical_landscape.csv",
@@ -290,7 +295,7 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
         memory_profiler.sample("canonical_npz_written")
         canonical_landscape_csv_path = None
         csv_backend = "skipped"
-        if not args.no_csv:
+        if args.write_csv and not args.no_csv:
             canonical_landscape_csv_path = write_canonical_landscape_csv(
                 canonical_landscape,
                 output_dir / "canonical_landscape.csv",
@@ -385,6 +390,7 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
             "canonicalization_backend": canonicalization_backend,
             "canonical_landscape_npz": str(canonical_landscape_path),
             "csv_performed": canonical_landscape_csv_path is not None,
+            "csv_requested": bool(args.write_csv and not args.no_csv),
             "csv_backend": csv_backend,
             "csv_chunk_size": args.csv_chunk_size,
             "canonical_landscape_csv": (
@@ -396,6 +402,7 @@ def canonicalize_bundle(request: CanonicalizeRequest) -> CanonicalizeResult:
             "canonical_frame_npz": frame_paths["canonical_frame_npz"],
             "visualization_performed": visualization_performed,
             "visualization_report": visualization_report_path,
+            "projection_panels_performed": bool(visualization_performed and args.projection_panels),
             "memory_profile_performed": args.profile_memory,
             "memory_profile": str(memory_profile_path) if args.profile_memory else None,
             "selection_performed": False,
@@ -822,6 +829,7 @@ def _write_canonical_default_visualization(
             color_vmax=color_vmax,
             display_filter_mode=str(spec["display_filter_mode"]),
             selection_metadata=selection_metadata,
+            write_individual_projections=bool(args.projection_panels),
         )
         preview_reports[label] = report
         generated_files[f"{label}_visualization_report_json"] = report["report_path"]

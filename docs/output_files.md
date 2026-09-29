@@ -172,12 +172,22 @@ Typical files include:
 
 ```text
 canonical_landscape.npz
-canonical_landscape.csv
 canonicalization_report.json
 canonicalize_summary.json
 canonical_frame.json
 canonical_frame.npz
+canonical_landscape.csv        # only with --write-csv
 ```
+
+`canonical_landscape.csv` is not written by default: it is large and
+`canonical_landscape.npz` holds the same data. `--write-csv` writes it.
+
+The canonical preview figures go to
+`visualizations/canonical/<canonical_id>/<display set>/`, one folder per display
+set (all particles, `sld_raw > 1.5`, and the top-SLD fit fraction). Each has the
+Euler and rotation-vector 3-view projections and 3D views. `--projection-panels`
+also writes every 3-view panel as its own PNG (`euler_alpha_beta.png`, …,
+`rotvec_yz.png`; 18 extra figures in total).
 
 Canonicalization derives a coordinate frame and writes new artifacts. It does
 not overwrite raw landscape artifacts.

@@ -119,12 +119,21 @@ def write_landscape_visualizations(
     artifact_layout: str = "flat",
     selection_metadata: Mapping[str, Any] | None = None,
     output_profile: str = "full",
+    write_individual_projections: bool | None = None,
 ) -> dict[str, Any]:
-    """Write display-only table, static figures, and optional debug CSVs."""
+    """Write display-only table, static figures, and optional debug CSVs.
+
+    ``write_individual_projections`` controls the separate per-panel PNGs of the
+    run-bundle layout (each panel is also in the 3-view figure). ``None`` keeps the
+    historical behaviour: written for ``output_profile="full"``.
+    """
 
     _ensure_matplotlib_available()
     if output_profile not in {"full", "quicklook"}:
         raise ValueError("output_profile must be 'full' or 'quicklook'")
+    individual_projections = (
+        output_profile == "full" if write_individual_projections is None else bool(write_individual_projections)
+    ) and output_profile == "full"
     if output_profile == "quicklook" and (
         write_projection_csvs or generate_histograms or generate_axis_direction_map
     ):
@@ -213,6 +222,7 @@ def write_landscape_visualizations(
         artifact_layout=artifact_layout,
         display_table_filename=display_table_filename,
         output_profile=output_profile,
+        write_individual_projections=individual_projections,
     )
     _ensure_visualization_paths_available(expected_paths, overwrite=overwrite)
 
@@ -286,7 +296,7 @@ def write_landscape_visualizations(
                     color_vmin=resolved_color_vmin,
                     color_vmax=resolved_color_vmax,
                     artifact_layout=artifact_layout,
-                    write_individual_projections=output_profile == "full",
+                    write_individual_projections=individual_projections,
                 )
             )
             if output_profile == "full":
@@ -791,6 +801,7 @@ def _expected_visualization_paths(
     artifact_layout: str,
     display_table_filename: str | None,
     output_profile: str,
+    write_individual_projections: bool,
 ) -> list[Path]:
     paths = []
     if output_profile == "full":
@@ -821,7 +832,7 @@ def _expected_visualization_paths(
                         else f"{output_prefix}{source}_{rep}_cloud_3d.{fmt}"
                     )
                     paths.append(output_dir / cloud_name)
-                if artifact_layout == "run_bundle" and output_profile == "full":
+                if artifact_layout == "run_bundle" and write_individual_projections:
                     projections = EULER_PROJECTIONS if rep == "euler" else ROT_VECTOR_PROJECTIONS
                     for projection_name, _, _ in projections:
                         paths.append(

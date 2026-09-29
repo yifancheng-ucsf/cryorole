@@ -772,6 +772,12 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
         action="store_true",
         help="Replace canonical/<canonical-id>/ only; the raw landscape and other frames are unchanged.",
     )
+    parser.add_argument(
+        "--write-csv",
+        action="store_true",
+        help="Also write canonical_landscape.csv. Off by default: it is large and canonical_landscape.npz holds the same data.",
+    )
+    # Deprecated: skipping the CSV is now the default.
     parser.add_argument("--no-csv", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument(
         "--euler-convention",
@@ -819,6 +825,11 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
     )
     parser.add_argument("--use-frame", help="Existing canonical_frame.json to apply instead of fitting.")
     parser.add_argument("--no-visualize", action="store_true", help="Skip canonical quick-look visualization.")
+    parser.add_argument(
+        "--projection-panels",
+        action="store_true",
+        help="Also write each 2D projection panel as its own PNG (18 extra figures). The 3-view figures already show every panel.",
+    )
     parser.set_defaults(handler=handlers["canonicalize"])
 
 

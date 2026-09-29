@@ -156,7 +156,7 @@ explicit run-only action and never creates a selection or export.
 
 ```bash
 cryorole run --ref REF --mov MOV [--output-dir RUN] [--overwrite]
-cryorole canonicalize --run-dir RUN [--canonical-id ID] [--overwrite]
+cryorole canonicalize --run-dir RUN [--canonical-id ID] [--overwrite] [--write-csv] [--projection-panels]
 cryorole visualize --run-dir RUN --space raw|canonical
 # default: two PNG 3-view projections for sld_display >= 1
 cryorole visualize --run-dir RUN --view 2d,1d

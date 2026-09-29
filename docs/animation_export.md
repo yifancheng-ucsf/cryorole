@@ -354,7 +354,7 @@ For `--coordinate-set canonical`, read:
 
 ```text
 RUN/canonical/<canonical_id>/canonical_landscape.npz
-RUN/canonical/<canonical_id>/canonical_landscape.csv
+RUN/canonical/<canonical_id>/canonical_landscape.csv   (only with canonicalize --write-csv)
 RUN/canonical/<canonical_id>/canonical_frame.json
 RUN/canonical/<canonical_id>/canonical_frame.npz
 ```
