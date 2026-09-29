@@ -200,6 +200,7 @@ def run_preflight(
         raw_csv=request.raw_csv,
         visualize=request.visualize,
         output_dir=request.output_dir,
+        input_paths=(request.ref, request.mov),
     )
     if not resource["disk_sufficient_with_20pct_margin"]:
         errors.append("Estimated output exceeds available disk space with the 20% safety margin")
