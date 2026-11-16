@@ -34,7 +34,8 @@ jobs:
         include:
           # Oldest supported Python (requires-python = ">=3.9") and a current one on Linux,
           # plus macOS (Apple silicon), the main desktop platform.
-          - os: ubuntu-latest
+          # ubuntu-latest (Ubuntu 26.04) has no Python 3.9 build; 24.04 still does.
+          - os: ubuntu-24.04
             python-version: "3.9"
           - os: ubuntu-latest
             python-version: "3.13"
