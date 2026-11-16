@@ -1,6 +1,6 @@
 # cryoROLE
 
-[![tests](https://github.com/yifancheng-ucsf/cryorole/actions/workflows/tests.yml/badge.svg)](https://github.com/yifancheng-ucsf/cryorole/actions/workflows/tests.yml)
+[![tests](https://github.com/yifancheng-ucsf/cryorole/actions/workflows/tests.yml/badge.svg)](https://github.com/yifancheng-ucsf/cryorole/actions/workflows/tests.yml) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24274534.svg)](https://doi.org/10.5281/zenodo.24274534)
 
 **cryoROLE (cryo-EM Relative Orientation LandscapE) maps how one domain of a complex rotates relative to another, particle by particle, and lets you export the particles from any region of that landscape.**
 
@@ -211,6 +211,8 @@ Or do all of it in the GUI: on **Inputs**, choose each file (**File...**) or ref
 If you use cryoROLE, please cite:
 
 - Chengmin Li, Wooyoung Choi, Hao Wu, Yifan Cheng. **CryoROLE: describing large inter-domain rotation in single particle cryo-EM.** bioRxiv, 2026. [doi:10.64898/2026.07.04.736454](https://www.biorxiv.org/content/10.64898/2026.07.04.736454v1)
+
+Software: Chengmin Li. **cryoROLE** (version 2.0.0a1). Zenodo, 2026. [doi:10.5281/zenodo.24274534](https://doi.org/10.5281/zenodo.24274534) (this DOI always points to the latest version; each release has its own version DOI on Zenodo).
 
 First application: Wooyoung Choi, Chengmin Li, Yifei Chen, YongQiang Wang, Yifan Cheng. **Structural dynamics of human fatty acid synthase in the condensing cycle.** Nature, 2025. [doi:10.1038/s41586-025-08782-w](https://doi.org/10.1038/s41586-025-08782-w)
 
