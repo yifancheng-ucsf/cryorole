@@ -1,5 +1,6 @@
 """Input/output collisions, source changes and interruption cannot publish false pairs."""
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +34,7 @@ def test_star_subset_refuses_overwriting_input_alias(tmp_path, alias):
     elif alias == 'symlink':
         target.symlink_to(source)
     else:
-        target.hardlink_to(source)
+        os.link(source, target)  # Path.hardlink_to needs Python 3.10
     with pytest.raises(ValueError, match='input source'):
         write_star_particle_subset(index, [0, 1], target)
     assert source.read_bytes() == original
