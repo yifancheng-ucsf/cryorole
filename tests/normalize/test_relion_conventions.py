@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -69,6 +71,13 @@ def test_default_relion_policy_records_implemented_bridge() -> None:
     resolution = resolver.resolve()
 
     assert resolution.conversion_rule_used == IMPLEMENTED_RELION_CONVERSION_RULE
+
+
+@pytest.mark.parametrize("policy", [replace(ConventionPolicy.relion_default(), degrees=False),
+                                    replace(ConventionPolicy.cryosparc_default(), degrees=True)])
+def test_convention_resolver_rejects_units_that_contradict_source_format(policy) -> None:
+    with pytest.raises(ValueError, match="degrees="):
+        ConventionResolver(policy)
 
 
 def test_pose_normalizer_centralizes_passive_to_active_conversion() -> None:

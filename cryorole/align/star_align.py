@@ -52,6 +52,8 @@ from cryorole.io.readers.star_reader import (
 )
 from cryorole.align.star_values import angle_difference_deg, float_columns, optics_per_row
 from cryorole.provenance.source_identity import stream_sha256
+from cryorole.provenance import SourceIdentityGuard, build_source_identity
+from cryorole.io.writers.publication import ArtifactDirectory
 
 ALIGN_REPORT_SCHEMA_VERSION = "2"
 LOW_OVERLAP_FRACTION = 0.50
@@ -98,6 +100,31 @@ def align_star_files(
     via_extraction: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Align two RELION STAR particle tables and write auditable artifacts."""
+
+    arguments = locals().copy()
+    _validate_star_input(Path(ref), "ref")
+    _validate_star_input(Path(mov), "mov")
+    _validate_align_id(align_id)
+    if via_extraction is not None and len(via_extraction) != 2:
+        raise ValueError("--via-extraction needs two STAR files: the extraction INPUT and OUTPUT")
+    inputs = [ref, mov, *(via_extraction or ())]
+    identities = {str(i): build_source_identity(path, source_type="relion", row_count=-1).to_dict()
+                  for i, path in enumerate(inputs)}
+    destination = Path(output_dir) if output_dir is not None else Path(ref).parent / DEFAULT_OUTPUT_PARENT / align_id
+    with ArtifactDirectory(destination, overwrite=overwrite, inputs=inputs, label="Align") as publication:
+        arguments.update(output_dir=publication.path, overwrite=True)
+        result = _align_star_files_impl(**arguments)
+        SourceIdentityGuard(identities).assert_unchanged()
+        result = publication.publicize(result)
+    return result
+
+
+def _align_star_files_impl(
+    *, ref, mov, align_id="default", key_columns=None, key_pairs=None, float_tolerances=None,
+    path_mode="exact", duplicate_policy="exclude", overwrite=False, output_dir=None,
+    coordinate_match=None, recenter_shift=None, ref_angpix=None, micrograph_angpix=None, via_extraction=None,
+) -> dict[str, Any]:
+    """Assemble one alignment in the caller's staging directory."""
 
     ref_path, mov_path = Path(ref), Path(mov)
     _validate_star_input(ref_path, "ref")
@@ -431,6 +458,7 @@ def _align_by_keys(
             "key_columns": spec.describe(),
             "ref_key_columns": list(ref_columns),
             "mov_key_columns": list(mov_columns),
+            "resolved_float_tolerances": dict(spec.float_tolerances),
             "auto_candidates": [list(candidate) for candidate in AUTO_KEY_CANDIDATES],
         },
         zero_overlap_message=(

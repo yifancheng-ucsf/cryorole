@@ -397,7 +397,11 @@ def write_canonical_landscape_csv_from_arrays(
 def read_landscape_csv(path: str | Path) -> Landscape:
     """Read a user-facing raw or canonical landscape CSV."""
 
-    table = pd.read_csv(path)
+    # pandas 3 can infer missing values even after a string converter. Protect
+    # identity text in a tuple during parsing, then unwrap it. Only this column
+    # bypasses inference; numeric/boolean columns retain normal NA handling.
+    table = pd.read_csv(path, converters={"particle_key": lambda value: (value,)})
+    table["particle_key"] = table["particle_key"].map(lambda value: value[0])
     raw_coordinates = _coordinates_from_columns(
         table,
         preferred=("raw_rv_x_rad", "raw_rv_y_rad", "raw_rv_z_rad"),

@@ -125,7 +125,7 @@ class DensityPolicy:
     """Controls analysis-space density computation and display normalization."""
 
     density_metric: str = "sld"
-    sld_metric: str = "rotvec_euclidean"
+    sld_metric: str = "so3_geodesic"  # keep equal to cryorole.core.density.DEFAULT_SLD_METRIC
     coordinate_source: str = "rotvec_ro"
     k_neighbors: int = 50
     distance_floor_mode: str = "relative_to_global_local_k_mean"
@@ -196,6 +196,7 @@ class AnimationPolicy:
     encode_movie: bool = True
     crf: int = 18
     movie_name: str = "animation.mp4"
+    ro_density_direction: str = "active"
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,11 @@ class SelectionMetadataExportPolicy:
     allow_unverified_source: bool = False
     # How omitted --run-dir / --selection-id were filled in (cryorole.workflow.resolve).
     resolved_by: dict[str, dict[str, str]] | None = None
+    # CryoSPARC result group (.csg) of the source job to mirror; None: the only one next to the source.
+    cryosparc_group_ref: str | Path | None = None
+    cryosparc_group_mov: str | Path | None = None
+    # False (--no-cryosparc-group): write the .cs subset alone, without mirroring a result group.
+    mirror_cryosparc_group: bool = True
 
 
 @dataclass(frozen=True)

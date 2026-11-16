@@ -27,6 +27,7 @@ from cryorole.export import (
 from cryorole.export.serialization import to_json_safe
 from cryorole.io.readers import read_relion_star
 from cryorole.io.readers.cs_reader import read_cryosparc_cs_column
+from cryorole.io.writers.publication import ArtifactDirectory
 from cryorole.provenance.source_identity import verify_source_identity
 from cryorole.select.metadata import CsMetadataColumn, CS_METADATA_MAX_GROUPS
 from cryorole.models.landscape import Landscape
@@ -261,6 +262,21 @@ def _write_selection_outputs(
     selection,
     output_dir: Path,
 ) -> None:
+    with ArtifactDirectory(output_dir, overwrite=args.overwrite, label='Selection',
+                           omit_existing=('selected_landscape',)) as publication:
+        _prepare_selection_outputs(
+            args=args, landscape=landscape, landscape_metadata=landscape_metadata,
+            euler_metadata=euler_metadata, policy=policy, selection=selection,
+            publication=publication,
+        )
+
+
+def _prepare_selection_outputs(
+    *, args, landscape: Landscape, landscape_metadata: dict[str, object],
+    euler_metadata: dict[str, object], policy: SelectionPolicy, selection,
+    publication: ArtifactDirectory,
+) -> None:
+    output_dir = publication.path
     selected_data = _selected_rows_from_parent_landscape_allow_empty(
         landscape,
         selection.selected_particle_keys,
@@ -281,7 +297,7 @@ def _write_selection_outputs(
     write_selection_artifact(
         SelectionArtifactRequest(
             selection=selection,
-            output_dir=output_dir,
+            output_dir=publication.output,
             overwrite=args.overwrite,
             selected_rows=SelectedRowProvenance(
                 particle_key=selected_data["particle_key"].tolist(),
@@ -352,7 +368,8 @@ def _write_selection_outputs(
             "selected_landscape_written": selected_landscape_report is not None,
             "selected_landscape_report": selected_landscape_report,
             },
-        )
+        ),
+        publication=publication,
     )
 
 
@@ -1051,7 +1068,6 @@ def _prepare_output_dir(
             f"Choose another --selection-id to save a separate selection, "
             f"or use --overwrite to replace {path.name!r}."
         )
-    path.mkdir(parents=True, exist_ok=True)
     return path
 
 

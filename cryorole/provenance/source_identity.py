@@ -27,6 +27,7 @@ class SourceIdentity:
     sha256: str
     row_count: int
     schema_version: str = SOURCE_IDENTITY_SCHEMA_VERSION
+    input_path_absolute: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -60,6 +61,23 @@ class SourceIdentityGuard:
             path = Path(str(values.get("resolved_path", "")))
             if not path.is_file():
                 raise ValueError(f"{domain} source metadata is missing after preflight: {path}")
+            input_path = values.get("input_path_absolute")
+            if not input_path:
+                # Old absolute input paths can still be checked. An old relative
+                # path has no saved base directory; retain its content guard.
+                original = values.get("original_path")
+                if original and Path(str(original)).is_absolute():
+                    input_path = original
+            if input_path:
+                try:
+                    current_target = Path(str(input_path)).expanduser().resolve(strict=True)
+                except (OSError, RuntimeError) as exc:
+                    raise ValueError(f"{domain} source path no longer resolves after preflight: {input_path}") from exc
+                if current_target != path:
+                    raise ValueError(
+                        f"{domain} source path changed after preflight; run aborted. "
+                        "Keep the input link and its parent directories fixed, then rerun."
+                    )
             observed_hash = stream_sha256(path)
             if not hmac.compare_digest(observed_hash, str(expected_hash)):
                 raise ValueError(
@@ -110,6 +128,7 @@ def build_source_identity(
         mtime_ns=int(stat.st_mtime_ns),
         sha256=stream_sha256(resolved),
         row_count=int(row_count),
+        input_path_absolute=str(Path(original_path).expanduser().absolute()),
     )
 
 

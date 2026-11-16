@@ -99,7 +99,7 @@ def _read_header(path):
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
 
-    with open(path, "r", newline="") as f:
+    with open(path, "r", newline="", encoding="utf-8-sig") as f:
         first = f.readline()
     if not first:
         raise ValueError(f"File is empty: {path}")
@@ -214,7 +214,7 @@ def _infer_coordinate_source(path, delimiter, norm_to_index, max_rows=1000):
 
     values = []
     try:
-        with open(path, "r", newline="") as f:
+        with open(path, "r", newline="", encoding="utf-8-sig") as f:
             # skip header
             next(f, None)
             if delimiter is None:
@@ -368,16 +368,28 @@ def _resolve_metric_column(norm_to_index, metric=None, space="auto"):
 
 
 def _read_numeric_columns(path, delimiter, usecols):
-    """Read only selected numeric columns from a possibly wide CSV/TSV table."""
-    data = np.genfromtxt(
-        path,
-        delimiter=delimiter,
-        skip_header=1,
-        usecols=list(usecols),
-        dtype=np.float32,
-        comments=None,
-        invalid_raise=False,
-    )
+    """Read selected numbers while honoring quoted fields in current tables."""
+    if delimiter is None:
+        data = np.genfromtxt(
+            path, delimiter=None, skip_header=1, usecols=list(usecols),
+            dtype=np.float32, comments=None, invalid_raise=False,
+        )
+    else:
+        with open(path, "r", newline="", encoding="utf-8-sig") as stream:
+            reader = csv.reader(stream, delimiter=delimiter)
+            header = next(reader, ())
+
+            def selected_values():
+                for row in reader:
+                    if len(row) != len(header) or not row:
+                        continue
+                    for column in usecols:
+                        try:
+                            yield float(row[column])
+                        except ValueError:
+                            yield float("nan")
+
+            data = np.fromiter(selected_values(), dtype=np.float32).reshape(-1, len(usecols))
     if data.size == 0:
         raise ValueError("No numeric data rows were read.")
     if data.ndim == 1:

@@ -46,6 +46,7 @@ class RunBundleWriter:
         self.work_dir: Path | None = None
         self._history: list[dict[str, str]] = []
         self._committed = False
+        self._recovery_required = False
 
     def __enter__(self) -> "RunBundleWriter":
         parent = self.target_dir.parent
@@ -61,7 +62,7 @@ class RunBundleWriter:
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
-        if exc is not None and not self._committed:
+        if exc is not None and not self._committed and not self._recovery_required:
             self.fail(exc)
         return False
 
@@ -112,6 +113,8 @@ class RunBundleWriter:
     def commit(self) -> Path:
         """Validate, finalize metadata, and publish the complete bundle."""
 
+        if self._committed:
+            return self.target_dir
         self.set_state("validating")
         self._validate_required_artifacts()
         self._rewrite_json_staging_paths()
@@ -203,21 +206,44 @@ class RunBundleWriter:
     def _publish(self) -> None:
         target = self.target_dir
         staging = self.path
-        if not target.exists():
-            os.replace(staging, target)
-            self.work_dir = target
-            return
-        backup = target.parent / f".{target.name}.previous-{self.run_id[:8]}"
-        if backup.exists():
-            raise FileExistsError(f"Transactional backup path already exists: {backup}")
-        os.replace(target, backup)
+        lock = target.parent / f".{target.name}.publish-lock"
         try:
-            os.replace(staging, target)
-        except Exception:
-            os.replace(backup, target)
-            raise
-        self.work_dir = target
-        _safe_remove_tree(backup, expected_parent=target.parent)
+            lock.mkdir()
+        except FileExistsError as exc:
+            raise FileExistsError(f"Another run is publishing to {target}") from exc
+        try:
+            if target.exists() and not target.is_dir():
+                raise ValueError(f"Run output path exists and is not a directory: {target}")
+            if target.exists() and not self.overwrite:
+                raise FileExistsError(f"Run output directory already exists: {target}")
+            backup = target.parent / f".{target.name}.previous-{self.run_id[:8]}" if target.exists() else None
+            if backup is not None and backup.exists():
+                raise FileExistsError(f"Transactional backup path already exists: {backup}")
+            try:
+                if backup is not None:
+                    os.replace(target, backup)
+                os.replace(staging, target)
+            except BaseException:
+                try:
+                    if backup is not None and backup.exists():
+                        if target.exists():
+                            _safe_remove_tree(target, expected_parent=target.parent)
+                        os.replace(backup, target)
+                    elif not staging.exists() and target.exists():
+                        _safe_remove_tree(target, expected_parent=target.parent)
+                except BaseException as error:
+                    self._recovery_required = True
+                    raise RuntimeError(
+                        f'Run publication rollback failed; recover preserved backup {backup} and stage {staging}'
+                    ) from error
+                raise
+            self.work_dir = target
+            self._committed = True
+            if backup is not None:
+                _safe_remove_tree(backup, expected_parent=target.parent)
+        finally:
+            if not self._recovery_required:
+                lock.rmdir()
 
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:

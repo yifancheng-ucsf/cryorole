@@ -144,6 +144,7 @@ Coordinate and baseline controls:
 --canonical-id ID                     default: default
 --euler-convention auto|extrinsic_zyx|intrinsic_zyx
 --map-frame-transform PATH            required with --map-frame explicit
+--ro-direction active|legacy-inverse  default: active (validated 2026-10-12)
 ```
 
 Trajectory controls:
@@ -259,6 +260,13 @@ Rules:
 - explicit EA/RV baselines must use the same convention and coordinate
   resolution rules as waypoints.
 
+Animation and canonical camera-view output replacement refuses a directory that
+contains consumed landscape/frame files, a referenced frame NPZ, the waypoint
+CSV, any source session, scene-basis/axis-limit configuration, or supplied
+renderer/encoder executables. Input names and resolved targets are both protected.
+Choose a separate output directory. Render failures after valid input preparation
+still retain the diagnostic manifest, logs and any generated frames.
+
 The implementation cannot infer this relationship from a `.cxs` file. The
 manifest must record it as a user assertion. The safe first public contract
 therefore requires an explicit `--baseline-ro`; it does not silently default to
@@ -354,7 +362,7 @@ For `--coordinate-set canonical`, read:
 
 ```text
 RUN/canonical/<canonical_id>/canonical_landscape.npz
-RUN/canonical/<canonical_id>/canonical_landscape.csv
+RUN/canonical/<canonical_id>/canonical_landscape.csv   (only with canonicalize --write-csv)
 RUN/canonical/<canonical_id>/canonical_frame.json
 RUN/canonical/<canonical_id>/canonical_frame.npz
 ```
@@ -620,25 +628,58 @@ cryoROLE's RO definition remains:
 RO = R_ref^-1 R_mov
 ```
 
-The initial animation bridge defines the relative passive change from the
-declared baseline to a target:
+cryoROLE's internal matrices are active map-to-image rotations
+(`x_image = R @ x_map`; for RELION, `R = scipy ZYZ(rot, tilt, psi)^T`). In the
+reference body's map frame the moving body therefore appears turned actively by
+`RO`: a particle whose two bodies have poses `R_ref` and `R_mov` contains the
+moving density `V_mov(RO^T x)`. A session saved at `RO_baseline` reaches a
+target RO with the raw-frame active delta
 
 ```text
-delta_passive = RO_target @ inverse(RO_baseline)
-delta_active = inverse(delta_passive)
+delta_active = RO_target @ inverse(RO_baseline)        (--ro-direction active)
 ```
 
-This formula must live in one shared helper and nowhere else:
+This formula lives in one shared helper and nowhere else:
 
 ```python
-ro_target_to_active_delta(target_ro, baseline_ro)
+ro_target_to_active_delta(target_ro, baseline_ro, direction="active")
 ```
 
-The helper's docstring and tests must state the passive/active convention,
-matrix action, multiplication order, and expected direction. Before execute
-mode is signed off, a non-symmetric synthetic object and known single-axis
-rotations must validate the formula against both cryoROLE normalization and
-ChimeraX rendering. Visual plausibility is not validation.
+`direction` is a required keyword. The manifest records the resolved
+`ro_density_direction` and its `ro_density_direction_policy` (formula, meaning,
+validation), and `animation_policy.ro_density_direction`.
+
+Before 2026-10-12 the bridge treated RO as a passive change and applied the
+inverse:
+
+```text
+delta_active = inverse(RO_target @ inverse(RO_baseline))   (--ro-direction legacy-inverse)
+```
+
+That turned the moving model by the inverse of the physical relative rotation;
+with an identity baseline, the structure shown at landscape point `rv` was the
+configuration at `-rv`. It is kept only as an explicit option for reproducing
+movies made before that date; selecting it adds a warning to the log and the
+manifest.
+
+Validation (2026-10-12, synthetic two-body known truth with asymmetric bodies, a
+25-degree turn about a tilted axis and an off-centre pivot):
+
+1. `relion_project` of the composite with reference poses `A_i`, then
+   `relion_reconstruct` with moving poses `A_i @ Q` returns the moving body in its
+   own frame (masked r = 0.9999); `A_i @ inverse(Q)` does not (r = 0.20). The
+   CryoSPARC encoding `pose = rotvec(A^T)` gives the same result through pyem.
+2. `cryorole run` (STAR and `.cs`) returns `RO = Q` per particle.
+3. The generated ChimeraX renderer, resampled onto the reference grid, places the
+   moving map at `Q` with `active` (r = 0.9997) and at `inverse(Q)` with
+   `legacy-inverse`.
+4. Real subset maps agree: in subsets of a real two-body dataset selected by
+   alpha, the moving body turns by the subset's mean RO change (within 2.5
+   degrees), not its inverse.
+
+`tests/animation/test_animate_direction_known_truth.py` keeps this as a
+regression: poses derived with RELION's own `Euler_angles2matrix`, `cryorole run`,
+then `cryorole animate` must place the moving body at the known turn.
 
 No frame may accumulate a transform from the prior frame.
 
@@ -827,6 +868,13 @@ For production-scale landscapes:
    frame;
 5. never rebuild a million-point scatter or reread CSV for every frame.
 
+For a small rendering check, run
+`python benchmarks/benchmark_animation_projection.py --rows 120 --frames 3`.
+The benchmark uses the shared viewport resolver and checks that the three
+scatter backgrounds and canvas background are built once. Use an explicit
+larger row count for performance measurements; a small successful run does not
+establish production-scale performance.
+
 Default Euler limits follow the visualize legacy viewport. `--range` applies
 the same display-only row filter and viewport semantics as visualize. Explicit
 limits or ranges must contain every trajectory point or fail clearly; markers
@@ -955,7 +1003,8 @@ Landscape, structure, and composite frames are never automatically removed.
 `manifest.json` records at least:
 
 The implemented rigid-model-group contract uses animation manifest schema
-version `8`.
+version `9` (version `9` adds `ro_density_direction` and
+`ro_density_direction_policy`).
 
 ```text
 schema_version
@@ -974,6 +1023,7 @@ path_csv
 path_space
 quaternion orders
 baseline_ro declaration
+ro_density_direction and ro_density_direction_policy
 session_scene_basis
 raw_to_scene transform provenance when used
 pivot and pivot coordinate frame
@@ -1136,7 +1186,7 @@ Normal tests cover:
 - adjacent-frame SO(3) distance;
 - canonical-to-raw back-mapping;
 - identity and non-identity baselines;
-- passive/active direction;
+- RO density direction against a known-truth two-body geometry (STAR and CS);
 - pivot invariance;
 - unchanged reference transform;
 - projection marker coordinates;
@@ -1195,7 +1245,8 @@ Before code work begins, resolve and test:
 2. whether every supported canonical frame is a proper, invertible
    change-of-basis for canonical-to-raw RO mapping;
 3. the exact meaning and source of a physical raw-to-ChimeraX-scene transform;
-4. the passive/active delta direction against current normalized RO semantics;
+4. the RO density direction against current normalized RO semantics
+   (resolved 2026-10-12: `active`, see section 9);
 5. ChimeraX `Place` multiplication order;
 6. the baseline RO represented by the prepared example session;
 7. the resume/finalization workflow after script-only rendering;

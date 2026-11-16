@@ -20,9 +20,19 @@ from cryorole.models.ro_result import ROResult
 
 
 SLD_METRICS = ("rotvec_euclidean", "so3_geodesic")
-DEFAULT_SLD_METRIC = "rotvec_euclidean"
+# SO(3) geodesic is the intrinsic metric described in the paper; rotvec_euclidean is the
+# faster local approximation for very large datasets (opt-in via --sld-metric).
+DEFAULT_SLD_METRIC = "so3_geodesic"
 DEFAULT_DENSITY_QUERY_BATCH_SIZE = 100_000
 _MAX_KNN_QUERY_ELEMENTS = 2_000_000
+# A kNN mean distance at or below this many radians is treated as zero: the
+# neighbours coincide with the query up to floating-point rounding. Identical
+# poses give relative orientations that are exactly the identity only when every
+# platform rounds R_ref^T R_mov identically; they do not (e.g. macOS wheels leave
+# ~1e-17 rad), so an exact ``== 0.0`` test would make ``sld_unfloored`` +inf on one
+# platform and ~1e16 on another. 1e-12 rad (~6e-11 degrees) is far below any
+# physical angular precision and far above rounding noise.
+COINCIDENT_DISTANCE_TOLERANCE_RAD = 1e-12
 
 
 def _require_ro_result(ro_result: ROResult) -> None:
@@ -154,8 +164,8 @@ def compute_sld_values(
     with np.errstate(divide="ignore", invalid="ignore"):
         sld_unfloored = global_local_k_mean / local_k_mean
         sld_raw = global_local_k_mean / effective_local_k_mean
-    sld_unfloored = np.where(local_k_mean == 0.0, np.inf, sld_unfloored)
-    sld_raw = np.where(effective_local_k_mean == 0.0, np.inf, sld_raw)
+    sld_unfloored = np.where(local_k_mean <= COINCIDENT_DISTANCE_TOLERANCE_RAD, np.inf, sld_unfloored)
+    sld_raw = np.where(effective_local_k_mean <= COINCIDENT_DISTANCE_TOLERANCE_RAD, np.inf, sld_raw)
 
     return {
         "sld_local_k_mean": local_k_mean,
@@ -220,35 +230,39 @@ def _so3_geodesic_local_k_mean(
     for start in range(0, n_points, batch_size):
         stop = min(start + batch_size, n_points)
         query_particle_indices = np.arange(start, stop, dtype=np.int64)
-        selected_neighbors = np.full((stop - start, k), -1, dtype=np.int64)
+        selected_chords = np.empty((stop - start, k), dtype=float)
         unresolved_rows = np.arange(stop - start, dtype=np.int64)
         candidate_count = min(max_candidate_count, k + 1)
 
         while unresolved_rows.size:
             unresolved_particles = query_particle_indices[unresolved_rows]
-            _, tree_indices = tree.query(
+            chords, tree_indices = tree.query(
                 quaternions[unresolved_particles],
                 k=candidate_count,
             )
-            tree_indices = np.asarray(tree_indices, dtype=np.int64)
-            if tree_indices.ndim == 1:
-                tree_indices = tree_indices.reshape(1, -1)
+            # Opposite signs of the same unit quaternion cannot both lie
+            # strictly inside this chord radius. Drop the first zero-distance
+            # match (self, or an interchangeable zero if the tie excluded self).
+            # Leave a margin for rounding at the antipodal seam.
+            unique = chords[:, k] < np.sqrt(2.0) - 1e-12
+            selected_chords[unresolved_rows[unique]] = chords[unique, 1:k + 1]
 
             still_unresolved: list[int] = []
-            for unresolved_position, row_index in enumerate(unresolved_rows):
+            for unresolved_position in np.flatnonzero(~unique):
+                row_index = unresolved_rows[unresolved_position]
                 particle_index = int(query_particle_indices[row_index])
                 seen: set[int] = set()
-                neighbors: list[int] = []
-                for tree_index in tree_indices[unresolved_position]:
+                neighbors: list[float] = []
+                for tree_index, chord in zip(tree_indices[unresolved_position], chords[unresolved_position]):
                     neighbor_index = int(tree_to_physical[tree_index])
                     if neighbor_index == particle_index or neighbor_index in seen:
                         continue
                     seen.add(neighbor_index)
-                    neighbors.append(neighbor_index)
+                    neighbors.append(chord)
                     if len(neighbors) == k:
                         break
                 if len(neighbors) == k:
-                    selected_neighbors[row_index] = neighbors
+                    selected_chords[row_index] = neighbors
                 else:
                     still_unresolved.append(int(row_index))
 
@@ -265,13 +279,10 @@ def _so3_geodesic_local_k_mean(
                 max(candidate_count + 1, candidate_count * 2),
             )
 
-        neighbor_quaternions = quaternions[selected_neighbors]
-        dots = np.einsum(
-            "bi,bki->bk",
-            quaternions[query_particle_indices],
-            neighbor_quaternions,
-        )
-        geodesic_distances = 2.0 * np.arccos(np.clip(np.abs(dots), 0.0, 1.0))
+        # Chord form of the geodesic angle, theta = 4 * arcsin(|q - s p| / 2) with the
+        # sign s chosen for the shorter chord. Unlike 2 * arccos(|q . p|), it keeps full
+        # precision near zero (arccos cannot resolve angles below ~2e-8 rad).
+        geodesic_distances = 4.0 * np.arcsin(np.clip(0.5 * selected_chords, 0.0, 1.0))
         local_k_mean[start:stop] = np.mean(geodesic_distances, axis=1)
 
     return local_k_mean

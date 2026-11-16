@@ -7,9 +7,9 @@ import json
 from datetime import datetime, timezone
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Iterable
 
 from cryorole.export.serialization import to_json_safe
+from cryorole.io.writers.publication import ArtifactFiles
 from cryorole.models.export_report import ExportReport
 from cryorole.models.policies import SelectionExportPolicy, SelectionPolicy
 from cryorole.models.selection import Selection
@@ -41,15 +41,6 @@ def export_selection(
     selected_keys_path = output_dir / policy.selected_keys_filename
     selection_json_path = output_dir / policy.selection_json_filename
     export_report_path = output_dir / policy.export_report_filename
-    _prepare_output_paths(
-        (selected_keys_path, selection_json_path, export_report_path),
-        overwrite=policy.overwrite,
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    _write_selected_keys_csv(selected_keys_path, selection)
-    _write_selection_json(selection_json_path, selection, policy)
-
     timestamp = datetime.now(timezone.utc).isoformat()
     report = ExportReport(
         output_paths={
@@ -66,7 +57,10 @@ def export_selection(
         timestamp=timestamp,
         export_policy=to_json_safe(policy),
     )
-    _write_export_report_json(export_report_path, report)
+    with ArtifactFiles(report.output_paths, overwrite=policy.overwrite) as publication:
+        _write_selected_keys_csv(publication.paths['selected_particle_keys_csv'], selection)
+        _write_selection_json(publication.paths['selection_json'], selection, policy)
+        _write_export_report_json(publication.paths['export_report_json'], report)
     return report
 
 
@@ -200,12 +194,6 @@ def _validate_simple_filename(filename: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a simple filename")
     if filename in {"", ".", ".."}:
         raise ValueError(f"{field_name} must be a simple filename")
-
-
-def _prepare_output_paths(paths: Iterable[Path], *, overwrite: bool) -> None:
-    existing = [path for path in paths if path.exists()]
-    if existing and not overwrite:
-        raise FileExistsError(f"Output path already exists: {existing[0]}")
 
 
 def _write_selected_keys_csv(path: Path, selection: Selection) -> None:

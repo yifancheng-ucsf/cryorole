@@ -222,6 +222,9 @@ artifact, generated ChimeraX scripts, logs, and a manifest. Add
 `--render-mode execute --chimerax-bin PATH --no-encode` for validated
 structure and composite frames. For MP4, also provide
 `--ffmpeg-bin PATH --ffprobe-bin PATH`.
+The moving model turns by `RO_target @ inverse(RO_baseline)` about the pivot
+(`--ro-direction active`, the default). Movies made before 2026-10-12 used the
+inverse; `--ro-direction legacy-inverse` reproduces them.
 Repeat `--reference-model-id` or `--moving-model-id` for a disjoint rigid
 group. All moving models follow the same absolute delta from their own saved
 scene transforms; independent motion within the group is not supported.

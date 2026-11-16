@@ -228,7 +228,7 @@ def test_http_evaluate_and_confirm_protocol_uses_exact_python_service(tmp_path) 
 
         confirm = Request(
             server.url + "api/confirm",
-            data=json.dumps({**identity, "selection_id": "from_http"}).encode(),
+            data=json.dumps({**identity, "selection_id": "from_http", "draft_id": draft["draft_id"]}).encode(),
             headers={"Content-Type": "application/json"}, method="POST",
         )
         with urlopen(confirm, timeout=3) as response:

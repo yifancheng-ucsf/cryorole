@@ -5,6 +5,8 @@ end their help with copyable examples. This page summarizes the public Workflow
 UX commands. The same operations are available from Python through
 `cryorole.api` (see `docs/python_api.md`).
 
+For complete argument lists, see [All command options](cli_options.md), generated from this release's help output. For worked plotting and selection examples, see [Command-line workflow](command_workflow.md).
+
 ## Common behaviour
 
 `cryorole --version` prints the installed version.
@@ -139,6 +141,97 @@ selection. Threshold/top fraction and point limits are display-only. The
 default accessible colormap is `viridis`; legacy `rainbow_r` remains available.
 The process serves until the page requests shutdown or Ctrl+C is used.
 
+## GUI
+
+```bash
+cryorole gui [--run-dir RUN] [--no-gl]
+```
+
+Opens the desktop interface; `--run-dir` opens that run bundle in the View page
+(otherwise use File > Open run, or make a new run on the Inputs, Parameters and
+Run pages). It needs the optional extra:
+`python -m pip install ".[gui]"` from the cryorole checkout (PySide6, pyqtgraph, PyOpenGL). On Linux, Qt 6.5
+and later also need the system library `libxcb-cursor0`.
+
+Before the window opens, a short check in a separate process tests that Qt can
+open a window and that OpenGL works for the 3D view:
+
+- if Qt cannot open a window, the command stops with the reason and what to
+  install or change;
+- if OpenGL is unusable, the GUI opens without the 3D view; the 2D and 1D views
+  do not need OpenGL;
+- with software OpenGL (for example a remote desktop), the 3D view works but is
+  slow at large point counts.
+
+On a workstation whose monitor is driven by an onboard chip while the NVIDIA
+GPUs are only secondary devices, start the GUI with NVIDIA PRIME render offload
+so the 3D view uses the GPU:
+
+```bash
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia cryorole gui
+```
+
+`--no-gl` skips the OpenGL check and the 3D view.
+
+The View page shows the raw landscape or a canonical frame as three 2D
+projections and 1D distributions, with Euler or rotation-vector coordinates;
+"3D view..." opens the 3D points in their own window, which follows the same
+settings.
+Its defaults match `cryorole visualize`:
+
+- display filter `sld_display >= 1`; alternatives are the top N % by SLD (like
+  `--top-fraction`) or all particles (like `--all`);
+- standard axis ranges (Euler ±180°, rotation vector ±3.14 rad) with equal axis
+  units; alternatives are fitting the central 99 % of the displayed particles,
+  fitting all of them, or custom ranges per axis (like `--axis-limit`). The
+  chosen range applies to the 3D, 2D and 1D views;
+- colour scale `vmax = min(max SLD, 100)` unless an SLD colour max is set (like
+  `--vmax`), legacy colours.
+
+The 3D view draws a deterministic sample of at most 100,000 points by default
+(seed 0, adjustable as "3D max points"); the 2D projections and 1D distributions
+always use every particle that passes the display filter. All of these controls
+are display-only: they change no landscape, selection or export, and an axis
+range never filters particles.
+
+The Select page adds a panel next to the views. In radius mode, a click in the
+2D or 3D view sets the centre to the nearest displayed particle (or type the
+centre), and the exact count over the full landscape updates as the centre or
+radius changes, using the same SO(3) evaluator as `cryorole select` in the space
+shown. Selected particles are highlighted. The other modes are those of
+`cryorole select`: SLD threshold (`sld_raw`), coordinate range, random fraction
+and source metadata values. Confirm writes a standard selection under
+`selections/NAME`, never overwrites one, and adds the equivalent `cryorole
+select` command to the Commands panel. Display filters and the 3D sample never
+change a selection.
+
+The Inputs page takes the reference and moving body, each a `.cs` / `.star`
+file or a job folder. In a CryoSPARC job folder the particle file named by the
+job's particle result group (`.csg`) is used; in a RELION job folder,
+`run_data.star`. When a folder holds several candidates, the GUI lists them and
+you choose; it never guesses (for example between iterations). Both inputs must
+come from the same software. The page then runs the same checks as
+`cryorole preflight` and shows READY / READY_WITH_WARNINGS / BLOCKED with the
+matching summary and the memory estimate. The Parameters page sets the output
+folder and the `cryorole run` options (SLD metric, *k*, quick-look figures, the
+raw CSV table), and shows the equivalent command. The Run page runs
+`cryorole run` in a separate process with stage progress and Cancel (a cancelled
+run publishes nothing); the new bundle then opens in the View page. The GUI never
+overwrites a run. "Canonicalize..." on the View page runs
+`cryorole canonicalize` and opens the new frame.
+
+The Export page runs `cryorole export` for a selection and domain. For
+CryoSPARC sources it shows the result group (`.csg`) found next to each source
+`.cs`, or lets you choose the source job's particle group; after the export it
+shows the files written and the steps to import them (copy commands and the
+Import Result Group path). It never overwrites an existing export folder.
+
+The desktop View page also offers **Save figures...** and a read-only saved
+Selection overlay. Saving captures the current display settings and uses the
+standard visualization renderer; it never overwrites an existing figure name.
+Overlays do not create or confirm a Selection. See [Desktop GUI](gui.md) for
+the complete workflow, installation and acceptance limits.
+
 ## Guide
 
 ```bash
@@ -156,7 +249,7 @@ explicit run-only action and never creates a selection or export.
 
 ```bash
 cryorole run --ref REF --mov MOV [--output-dir RUN] [--overwrite]
-cryorole canonicalize --run-dir RUN [--canonical-id ID] [--overwrite]
+cryorole canonicalize --run-dir RUN [--canonical-id ID] [--overwrite] [--write-csv] [--projection-panels]
 cryorole visualize --run-dir RUN --space raw|canonical
 # default: two PNG 3-view projections for sld_display >= 1
 cryorole visualize --run-dir RUN --view 2d,1d
@@ -169,8 +262,43 @@ cryorole export --run-dir RUN --selection-id ID --domain ref|mov|both
 completed and validated; `canonicalize --overwrite` replaces
 `canonical/<canonical-id>/` only.
 
+**Figure speed options** (`run` and `canonicalize`):
+
+- `--jobs auto|N` renders independent figure sets in separate processes
+  (`run`: the three quick-look subsets; `canonicalize`: the three display
+  sets). `auto` (default) uses up to 3, limited by CPU cores and free memory,
+  and stays at 1 below 100k particles. Output files are identical to `--jobs 1`;
+  each extra process needs memory (about 200 MiB + 1 KB per plotted particle).
+- `--point-style density` draws 2D projections as an image with one cell per
+  screen pixel holding the SLD value that would be visible there, instead of one
+  marker per point (`scatter`, default). About 15x faster at 500k points. The
+  picture is near-identical; sparse regions look slightly thinner because a
+  scatter marker (~1.4 px) also tints neighbouring pixels. 3D views keep markers.
+
 `export` refuses to write a subset when the source particle table no longer has
 the row count recorded by the run.
+
+**Back into CryoSPARC.** For a CryoSPARC source, export also mirrors the source
+job's own result group, so the subset can be brought back with **Import Result
+Group**. It uses the job's particle `.csg` file (e.g. `J75/J75_particles.csg`):
+`--cryosparc-group-ref` / `--cryosparc-group-mov PATH`, or the only `.csg` next
+to the source `.cs` that names it. Every file the group names is subset: the
+source `.cs` by the recorded source rows, the others (for example
+`J75_passthrough_particles.cs`, which holds the particle images) by `uid` in the
+same order; a missing or duplicated `uid` is an error. The new group,
+`selected_<domain>.csg`, names those subsets. When no group is found (for
+example a run on a copied `.cs` without its job folder), only the `.cs` subset
+is written and the export says which `--cryosparc-group-*` file to pass. The
+group is checked before the first file is written: when it cannot be mirrored
+(several candidates, a missing passthrough file, a different row count), the
+export stops without writing anything. `--no-cryosparc-group` writes the `.cs`
+subsets alone.
+
+Import Result Group only accepts files inside the CryoSPARC project directory.
+The export report, `NEXT_STEPS.txt` and the command's stderr give the copy
+commands (as the project's owner when you cannot write there, e.g.
+`sudo -u cryosparc`) and the path to import. The import copies the files into
+its own job folder.
 
 See `docs/output_files.md` for the artifact layout and the scientific and
 display distinctions.

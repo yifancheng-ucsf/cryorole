@@ -132,3 +132,40 @@ def test_run_with_more_than_k_identical_ros_no_longer_crashes(tmp_path) -> None:
     assert "unfloored SLD (`sld_unfloored`) is +inf" in (tmp_path / "out" / "run_report.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_identical_poses_report_inf_sld_when_ro_product_is_not_exactly_symmetric(tmp_path, monkeypatch) -> None:
+    """Regression for the macOS CI failure.
+
+    Some BLAS builds (the macOS NumPy wheels) round R_ref^T @ R_mov differently from Linux,
+    so identical poses give ROs ~1e-17 rad from the identity instead of exactly the identity.
+    Simulate that asymmetric rounding and require the same report as on Linux.
+    """
+
+    import cryorole.workflows.run_pipeline as run_pipeline
+
+    class _AsymmetricRoundingNumpy:
+        def __getattr__(self, name):
+            return getattr(np, name)
+
+        @staticmethod
+        def matmul(a, b, *args, **kwargs):
+            out = np.matmul(a, b, *args, **kwargs)
+            if isinstance(out, np.ndarray) and out.ndim == 3 and out.shape[1:] == (3, 3):
+                out = out.copy()
+                out[:, 0, 1] += np.random.default_rng(0).uniform(-1.0, 1.0, len(out)) * 2.2e-17
+            return out
+
+    monkeypatch.setattr(run_pipeline, "np", _AsymmetricRoundingNumpy())
+    ref_rv = _ref_rv()
+    mov = _perturbed(ref_rv, 0.3)
+    mov[:60] = ref_rv[:60]
+    _write_cs(tmp_path / "ref.cs", UIDS, ref_rv)
+    _write_cs(tmp_path / "mov.cs", UIDS, mov)
+
+    assert _run(tmp_path / "ref.cs", tmp_path / "mov.cs", tmp_path / "out") == 0
+    density = json.loads((tmp_path / "out" / "reports" / "density_report.json").read_text(encoding="utf-8"))
+    assert '"n_inf_sld_unfloored": 60' in json.dumps(density)
+    assert "unfloored SLD (`sld_unfloored`) is +inf" in (tmp_path / "out" / "run_report.md").read_text(
+        encoding="utf-8"
+    )

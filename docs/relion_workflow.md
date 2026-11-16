@@ -3,6 +3,29 @@
 This guide shows the recommended cryoROLE 2.0 workflow for RELION STAR
 metadata. It focuses on the public commands and the default matching behavior.
 
+## Which output should I use?
+
+Use the **particle metadata from each domain refinement** containing
+`_rlnAngleRot`, `_rlnAngleTilt`, `_rlnAnglePsi` and particle identities. A completed
+refinement commonly provides `run_data.star`; an iteration may provide an
+`*_data.star` file. A `particles.star` file is suitable only if it actually carries
+the required refined orientations. Do not select `_model.star`, `_optimiser.star`,
+a map or a mask as the pose input.
+
+In the GUI, **Job folder...** prefers `run_data.star` when present; otherwise it
+lists `*_data.star` and `particles*.star` candidates. It does not infer that the
+largest iteration number is scientifically the right output. Use **File...**
+when you know the exact particle file, and inspect the associated map and job
+history to confirm which domain was aligned.
+
+Keep source image stacks accessible for later reconstruction from exported STAR
+subsets. Images themselves are not read to compute the orientation landscape.
+After subtraction or re-extraction, image names may have changed: follow
+[Preparing aligned STAR files](#preparing-aligned-star-files) instead of forcing
+a row match. Equal row counts alone are not evidence of correspondence.
+
+For a GUI walkthrough, see the [README](../README.md#6-your-own-data).
+
 ## Inputs
 
 cryoROLE compares two independently refined domains from the same particle set.

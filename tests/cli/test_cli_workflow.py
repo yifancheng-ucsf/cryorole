@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,7 +80,18 @@ class FakeRunner:
                 density_query_batch_size,
             )
         )
-        return SimpleNamespace(landscape=_make_landscape())
+        landscape = _make_landscape()
+        if density_policy is not None:
+            # Like the real runner: the density report records the policy's metric.
+            landscape = replace(
+                landscape,
+                density_report=replace(
+                    landscape.density_report,
+                    requested_sld_metric=density_policy.sld_metric,
+                    resolved_sld_metric=density_policy.sld_metric,
+                ),
+            )
+        return SimpleNamespace(landscape=landscape)
 
     def canonicalize_density_result(self, phase3, *, canonicalization_policy=None):
         self.calls.append(("canonicalize_density_result", phase3, canonicalization_policy))
@@ -153,12 +165,12 @@ def test_run_sld_metric_defaults_and_choices() -> None:
             "--mov",
             "mov.cs",
             "--sld-metric",
-            "so3_geodesic",
+            "rotvec_euclidean",
         ]
     )
 
-    assert default_args.sld_metric == "rotvec_euclidean"
-    assert explicit_args.sld_metric == "so3_geodesic"
+    assert default_args.sld_metric == "so3_geodesic"
+    assert explicit_args.sld_metric == "rotvec_euclidean"
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
@@ -413,18 +425,22 @@ def _make_canonical_landscape() -> Landscape:
 
 
 EXPECTED_DEFAULT_VISUALIZATION_FILES = (
-    "euler_alpha_beta.png",
-    "euler_beta_gamma.png",
-    "euler_alpha_gamma.png",
     "euler_3view_projection.png",
-    "rotvec_xy.png",
-    "rotvec_yz.png",
-    "rotvec_xz.png",
     "rotvec_3view_projection.png",
     "landscape_3d_euler.png",
     "landscape_3d_rotvec.png",
     "display_table.csv",
     "visualization_report.json",
+)
+
+# Written only with ``canonicalize --projection-panels``.
+PROJECTION_PANEL_FILES = (
+    "euler_alpha_beta.png",
+    "euler_beta_gamma.png",
+    "euler_alpha_gamma.png",
+    "rotvec_xy.png",
+    "rotvec_yz.png",
+    "rotvec_xz.png",
 )
 
 EXPECTED_RUN_QUICKLOOK_FILES = {
@@ -438,9 +454,11 @@ EXPECTED_RUN_QUICKLOOK_FILES = {
 }
 
 
-def _assert_default_visualization_group(group_dir: Path) -> dict:
+def _assert_default_visualization_group(group_dir: Path, *, projection_panels: bool = False) -> dict:
     for filename in EXPECTED_DEFAULT_VISUALIZATION_FILES:
         assert (group_dir / filename).exists()
+    for filename in PROJECTION_PANEL_FILES:
+        assert (group_dir / filename).exists() is projection_panels, filename
     return json.loads((group_dir / "visualization_report.json").read_text(encoding="utf-8"))
 
 
@@ -603,12 +621,12 @@ def test_run_manifest_records_resolved_cryosparc_uid_and_core_policies(tmp_path)
         )
     assert active_policies["match_policy"]["join_type"] == "inner"
     assert active_policies["density_policy"]["k_neighbors"] == 50
-    assert active_policies["density_policy"]["sld_metric"] == "rotvec_euclidean"
+    assert active_policies["density_policy"]["sld_metric"] == "so3_geodesic"
     assert manifest["reports"]["density_report"]["requested_sld_metric"] == (
-        "rotvec_euclidean"
+        "so3_geodesic"
     )
     assert manifest["reports"]["density_report"]["resolved_sld_metric"] == (
-        "rotvec_euclidean"
+        "so3_geodesic"
     )
     assert active_policies["representation_policy"]["euler_convention"] == "extrinsic_zyx"
     assert active_policies["representation_policy"]["scipy_euler_sequence"] == "zyx"
@@ -656,8 +674,8 @@ def test_run_summary_contains_counts_and_canonicalization_status(tmp_path) -> No
     assert summary["match_warnings"] == []
     assert summary["landscape_row_count"] == 3
     assert summary["k_neighbors"] == 7
-    assert summary["requested_sld_metric"] == "rotvec_euclidean"
-    assert summary["resolved_sld_metric"] == "rotvec_euclidean"
+    assert summary["requested_sld_metric"] == "so3_geodesic"
+    assert summary["resolved_sld_metric"] == "so3_geodesic"
     assert summary["canonicalization_performed"] is False
     assert summary["selection_performed"] is False
     assert summary["output_artifacts"]["raw_landscape_npz"] == str(
@@ -1861,7 +1879,7 @@ def test_canonicalize_loads_landscape_and_writes_outputs(tmp_path) -> None:
     assert canonicalize_command(args) == 0
 
     assert (output_dir / "canonical_landscape.npz").exists()
-    assert (output_dir / "canonical_landscape.csv").exists()
+    assert not (output_dir / "canonical_landscape.csv").exists()  # opt-in with --write-csv
     assert (output_dir / "canonicalization_report.json").exists()
     assert (output_dir / "canonicalize_summary.json").exists()
     assert (output_dir / "canonical_frame.json").exists()
@@ -1907,8 +1925,10 @@ def test_canonicalize_summary_records_source_and_artifacts(tmp_path) -> None:
     assert summary["frame_applied"] is False
     assert summary["frame_source_path"] is None
     assert summary["canonicalization_backend"] == "dataframe_compat"
-    assert summary["csv_performed"] is True
-    assert summary["csv_backend"] == "dataframe_compat"
+    assert summary["csv_performed"] is False
+    assert summary["csv_requested"] is False
+    assert summary["csv_backend"] == "skipped"
+    assert summary["projection_panels_performed"] is False
     assert summary["csv_chunk_size"] == 100000
     assert summary["visualization_performed"] is True
     assert summary["visualization_report"] == str(
@@ -1923,9 +1943,7 @@ def test_canonicalize_summary_records_source_and_artifacts(tmp_path) -> None:
     assert summary["output_artifacts"]["canonical_landscape_npz"] == str(
         output_dir / "canonical_landscape.npz"
     )
-    assert summary["output_artifacts"]["canonical_landscape_csv"] == str(
-        output_dir / "canonical_landscape.csv"
-    )
+    assert summary["output_artifacts"]["canonical_landscape_csv"] is None
     assert summary["output_artifacts"]["canonical_frame_json"] == str(
         output_dir / "canonical_frame.json"
     )
@@ -2116,6 +2134,7 @@ def test_canonicalize_profile_memory_writes_rss_profile(tmp_path, monkeypatch) -
     args = parser.parse_args(
         [
             "canonicalize",
+            "--write-csv",
             "--landscape",
             str(landscape_path),
             "--output-dir",
@@ -2170,6 +2189,7 @@ def test_canonicalize_output_landscape_contains_canonical_coordinates(tmp_path) 
     args = parser.parse_args(
         [
             "canonicalize",
+            "--write-csv",
             "--landscape",
             str(landscape_path),
             "--output-dir",
@@ -2206,8 +2226,7 @@ def test_canonicalize_writes_default_visualization_artifacts(tmp_path) -> None:
 
     canonicalize_command(args)
 
-    canonical_csv = pd.read_csv(output_dir / "canonical_landscape.csv")
-    assert len(canonical_csv) == 3
+    assert not (output_dir / "canonical_landscape.csv").exists()
     assert not (output_dir / "visualization_report.json").exists()
     assert not (output_dir / "display_coordinates.csv").exists()
     visualization_dir = output_dir / "visualizations"
@@ -2397,7 +2416,7 @@ def test_canonicalize_resolves_raw_landscape_from_run_dir(tmp_path) -> None:
 
     output_dir = run_dir / "canonical" / "default"
     assert (output_dir / "canonical_landscape.npz").exists()
-    assert (output_dir / "canonical_landscape.csv").exists()
+    assert not (output_dir / "canonical_landscape.csv").exists()
     assert not (output_dir / "visualizations" / "display_table.csv").exists()
     assert (
         run_dir
@@ -2413,7 +2432,7 @@ def test_canonicalize_resolves_raw_landscape_from_run_dir(tmp_path) -> None:
     ).exists()
     summary = json.loads((output_dir / "canonicalize_summary.json").read_text(encoding="utf-8"))
     assert summary["canonicalization_backend"] == "array_native"
-    assert summary["csv_backend"] == "array_native_chunked"
+    assert summary["csv_backend"] == "skipped"
     assert summary["visualization_performed"] is True
 
 
@@ -2787,6 +2806,51 @@ def test_canonicalize_use_frame_conflicts_with_explicit_fitting_controls(
         canonicalize_command(args)
 
 
+def test_canonicalize_write_csv_and_projection_panels_are_opt_in(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    parser = build_parser()
+    run_command(
+        parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(run_dir)]),
+        runner=FakeRunner(),
+    )
+    args = parser.parse_args(
+        ["canonicalize", "--run-dir", str(run_dir), "--write-csv", "--projection-panels"]
+    )
+
+    canonicalize_command(args)
+
+    output_dir = run_dir / "canonical" / "default"
+    summary = json.loads((output_dir / "canonicalize_summary.json").read_text(encoding="utf-8"))
+    assert summary["csv_requested"] is True
+    assert summary["csv_performed"] is True
+    assert summary["csv_backend"] == "array_native_chunked"
+    assert len(pd.read_csv(output_dir / "canonical_landscape.csv")) == 3
+    assert summary["projection_panels_performed"] is True
+    visualization_dir = run_dir / "visualizations" / "canonical" / "default"
+    for group in (
+        "all_particles",
+        "filter_particles_by_sld_gt_1p5",
+        "filter_particles_by_top_sld_40pct",
+    ):
+        _assert_default_visualization_group(visualization_dir / group, projection_panels=True)
+
+
+def test_canonicalize_no_csv_is_still_accepted_and_wins_over_write_csv(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    parser = build_parser()
+    run_command(
+        parser.parse_args(["run", "--ref", "ref.cs", "--mov", "mov.cs", "--output-dir", str(run_dir)]),
+        runner=FakeRunner(),
+    )
+
+    canonicalize_command(
+        parser.parse_args(["canonicalize", "--run-dir", str(run_dir), "--no-csv", "--write-csv", "--no-visualize"])
+    )
+
+    output_dir = run_dir / "canonical" / "default"
+    assert not (output_dir / "canonical_landscape.csv").exists()
+
+
 def test_canonicalize_csv_chunk_size_is_recorded(tmp_path) -> None:
     run_dir = tmp_path / "run"
     parser = build_parser()
@@ -2797,6 +2861,7 @@ def test_canonicalize_csv_chunk_size_is_recorded(tmp_path) -> None:
     canonicalize_args = parser.parse_args(
         [
             "canonicalize",
+            "--write-csv",
             "--run-dir",
             str(run_dir),
             "--canonical-id",

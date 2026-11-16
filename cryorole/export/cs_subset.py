@@ -8,6 +8,9 @@ from typing import Sequence
 
 import numpy as np
 
+from cryorole.export.subset_rows import validated_subset_rows
+from cryorole.io.writers.publication import ArtifactFiles
+
 
 @dataclass(frozen=True)
 class CsSubsetResult:
@@ -42,11 +45,10 @@ def write_cryosparc_cs_subset(
     output = Path(output_path)
     if not source.is_file():
         raise ValueError(f"CryoSPARC CS source file does not exist: {source}")
-    if output.exists() and not overwrite:
-        raise FileExistsError(f"Output path already exists: {output}")
-    array = np.load(source, allow_pickle=False)
-    if array.dtype.names is None:
-        raise ValueError("CryoSPARC CS file must be a structured array")
+    resolved_source = source.expanduser().resolve(strict=True)
+    array = np.load(resolved_source, allow_pickle=False)
+    if array.dtype.names is None or array.ndim != 1:
+        raise ValueError("CryoSPARC CS file must be a one-dimensional structured array")
 
     if expected_source_row_count is not None and len(array) != int(expected_source_row_count):
         raise ValueError(
@@ -54,45 +56,25 @@ def write_cryosparc_cs_subset(
             f"{int(expected_source_row_count)}; refusing to export. The source file may have been "
             "replaced, or it is not the file the run used."
         )
-    _validate_row_ids(row_ids, source_row_count=len(array), row_id_field=row_id_field)
-    subset = array[np.asarray(row_ids, dtype=np.int64)]
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("wb") as handle:
-        np.save(handle, subset)
-
-    written_uid_path: str | None = None
-    if "uid" in array.dtype.names:
-        uid_path = Path(uid_output_path) if uid_output_path is not None else None
+    rows = validated_subset_rows(row_ids, source_row_count=len(array), row_id_field=row_id_field, source_type='CS')
+    subset = array[rows]
+    uid_path = Path(uid_output_path) if uid_output_path is not None and 'uid' in array.dtype.names else None
+    destinations = {'metadata': output}
+    if uid_path is not None:
+        destinations['uids'] = uid_path
+    with ArtifactFiles(destinations, overwrite=overwrite, inputs=(source, resolved_source)) as publication:
+        with publication.paths['metadata'].open('wb') as handle:
+            np.save(handle, subset)
         if uid_path is not None:
-            if uid_path.exists() and not overwrite:
-                raise FileExistsError(f"Output path already exists: {uid_path}")
-            uid_path.parent.mkdir(parents=True, exist_ok=True)
-            with uid_path.open("w", encoding="utf-8") as handle:
+            with publication.paths['uids'].open("w", encoding="utf-8") as handle:
                 for uid in subset["uid"]:
                     handle.write(f"{uid}\n")
-            written_uid_path = str(uid_path)
 
     return CsSubsetResult(
         source_path=str(source),
         output_path=str(output),
-        selected_row_count=len(row_ids),
+        selected_row_count=len(rows),
         source_row_count=len(array),
         row_id_field=row_id_field,
-        uid_output_path=written_uid_path,
+        uid_output_path=str(uid_path) if uid_path is not None else None,
     )
-
-
-def _validate_row_ids(
-    row_ids: Sequence[int],
-    *,
-    source_row_count: int,
-    row_id_field: str,
-) -> None:
-    if len(set(row_ids)) != len(row_ids):
-        raise ValueError(f"{row_id_field} contains duplicate source row IDs")
-    out_of_bounds = [row_id for row_id in row_ids if row_id < 0 or row_id >= source_row_count]
-    if out_of_bounds:
-        raise ValueError(
-            f"{row_id_field} contains out-of-bounds row IDs for CS source "
-            f"with {source_row_count} rows: {out_of_bounds[:5]}"
-        )

@@ -22,14 +22,17 @@ back to the source table without using row order as an identity key.
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
 from cryorole.io.import_report import ImportReport
+from cryorole.provenance.output_paths import protect_input_file
 
 PARTICLES_BLOCK = "data_particles"
 OPTICS_BLOCK = "data_optics"
@@ -42,12 +45,19 @@ def split_star_fields(stripped: str) -> list[str]:
 
     Plain rows split on whitespace. Rows containing quotes keep a quoted value
     (``"a b"`` or ``'a b'``) as one field, quotes included, so that values are
-    reproduced verbatim. Every cryoROLE STAR reader uses this function.
+    reproduced verbatim. An unquoted token starting with ``#`` begins a comment;
+    a hash inside a quoted value or a path remains literal.
+    Every cryoROLE STAR reader uses this function.
     """
 
     if '"' not in stripped and "'" not in stripped:
-        return stripped.split()
-    return _QUOTED_FIELDS.findall(stripped)
+        fields = stripped.split()
+    else:
+        fields = _QUOTED_FIELDS.findall(stripped)
+    for index, value in enumerate(fields):
+        if value.startswith("#"):
+            return fields[:index]
+    return fields
 
 
 def unquote_star_value(value: str) -> str:
@@ -228,7 +238,9 @@ def _frame(sink: _ColumnSink | None, order: Sequence[str] | None = None) -> pd.D
         return pd.DataFrame(index=pd.RangeIndex(0, name="source_row_id"))
     names = [name for name in (order or [h for _, h in sink.positions]) if name in sink.values]
     frame = pd.DataFrame(
-        {name: sink.values[name] for name in names},
+        # Tables expose cell values; the byte index retains raw quoted tokens
+        # for source-preserving subset writers.
+        {name: [unquote_star_value(value) for value in sink.values[name]] for name in names},
         index=pd.RangeIndex(sink.count, name="source_row_id"),
     )
     return frame
@@ -444,7 +456,11 @@ def index_star_particles(
 def _replace_fields_in_place(line: str, replacements: dict[int, str], *, expected_fields: int) -> str:
     """Replace whole fields by position, keeping every other byte of the line (spacing included)."""
 
-    spans = [match.span() for match in _QUOTED_FIELDS.finditer(line)]
+    spans = []
+    for match in _QUOTED_FIELDS.finditer(line):
+        if match.group().startswith("#"):
+            break
+        spans.append(match.span())
     if len(spans) != expected_fields:
         raise ValueError(f"STAR row has {len(spans)} fields; expected {expected_fields}: {line.strip()[:80]}")
     pieces = []
@@ -475,33 +491,56 @@ def write_star_particle_subset(
     """
 
     output = Path(output_path)
+    protect_input_file(output, index.path)
+    selected = np.asarray(row_ids)
+    if selected.ndim != 1 or (selected.size and (
+            selected.dtype.kind not in "iu" or np.any(selected < 0) or np.any(selected >= index.row_count))):
+        raise ValueError("STAR subset row IDs must be integer source rows within the indexed table")
+    row_ids = selected.astype(np.int64, copy=False)
     output.parent.mkdir(parents=True, exist_ok=True)
     replace_columns = replace_columns or {}
     positions = {name: index.headers.index(name) for name in replace_columns}
     for name, values in replace_columns.items():
         if len(values) != len(row_ids):
             raise ValueError(f"replacement values for {name} must match the selected row count")
-    with open(index.path, "rb") as source, output.open("wb") as target:
-        if header_comment:
-            for comment_line in header_comment.splitlines():
-                target.write(f"# {comment_line}\n".encode("utf-8"))
-        target.write(source.read(index.prefix_end))
-        for out_row, row_id in enumerate(row_ids):
-            start = int(index.row_start[row_id])
-            end = int(index.row_end[row_id])
-            source.seek(start)
-            raw = source.read(end - start)
-            if positions:
-                raw = _replace_fields_in_place(
-                    raw.decode("utf-8"),
-                    {column_index: str(replace_columns[name][out_row]) for name, column_index in positions.items()},
-                    expected_fields=len(index.headers),
-                ).encode("utf-8")
-            if not raw.endswith((b"\n", b"\r")):
-                raw += b"\n"
-            target.write(raw)
-        source.seek(index.suffix_start)
-        target.write(source.read())
+    temporary = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+    created = False
+    try:
+        # O_EXCL creates one private name; the requested mode respects the user's
+        # umask, as the previous direct output.open('wb') did.
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        created = True
+        with os.fdopen(descriptor, "wb") as target, open(index.path, "rb") as source:
+            if header_comment:
+                for comment_line in header_comment.splitlines():
+                    target.write(f"# {comment_line}\n".encode("utf-8"))
+            prefix = source.read(index.prefix_end)
+            if len(prefix) != index.prefix_end:
+                raise ValueError("Indexed STAR source changed or was truncated during subset writing")
+            target.write(prefix)
+            for out_row, row_id in enumerate(row_ids):
+                start = int(index.row_start[row_id])
+                end = int(index.row_end[row_id])
+                source.seek(start)
+                raw = source.read(end - start)
+                if len(raw) != end - start:
+                    raise ValueError("Indexed STAR source changed or was truncated during subset writing")
+                if positions:
+                    raw = _replace_fields_in_place(
+                        raw.decode("utf-8"),
+                        {column_index: str(replace_columns[name][out_row]) for name, column_index in positions.items()},
+                        expected_fields=len(index.headers),
+                    ).encode("utf-8")
+                if not raw.endswith((b"\n", b"\r")):
+                    raw += b"\n"
+                target.write(raw)
+            source.seek(index.suffix_start)
+            target.write(source.read())
+        protect_input_file(output, index.path)
+        os.replace(temporary, output)
+    finally:
+        if created:
+            temporary.unlink(missing_ok=True)
     return output
 
 

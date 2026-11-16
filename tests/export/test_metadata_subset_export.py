@@ -798,3 +798,99 @@ def test_export_report_records_row_count_verification(tmp_path) -> None:
     domain_report = json.loads(Path(report["domain_reports"]["ref"]).read_text(encoding="utf-8"))
     assert domain_report["source_row_count_verified"] is True
     assert domain_report["source_row_count"] == 5
+
+
+def test_public_export_rejects_edited_source_row_mapping(tmp_path, capsys):
+    from cryorole.cli.main import main
+
+    run, _ref, _mov, selection_path = _make_run_bundle(tmp_path, mov_suffix=".cs")
+    companion = Path(selection_path).with_name("selected_landscape_rows.csv")
+    output = tmp_path / "out"
+    pd.DataFrame({"particle_key": ["p3", "p1"], "ref_source_row_id": [0, 4],
+                  "mov_source_row_id": [2, 0]}).to_csv(companion, index=False)
+    args = ["export", "--run-dir", str(run), "--selection-id", "sel", "--output-dir", str(output)]
+    with pytest.raises(SystemExit) as error:
+        main(args)
+    assert error.value.code == 2
+    assert "parent run's particle-to-source-row mapping" in capsys.readouterr().err
+    assert not output.exists()
+
+    # Companion rows can be in a different order if each key keeps the correct mapping.
+    pd.DataFrame({"particle_key": ["p1", "p3"], "ref_source_row_id": [1, 3],
+                  "mov_source_row_id": [3, 1]}).to_csv(companion, index=False)
+    assert main(args) == 0
+    assert read_relion_star(output / "ref/selected_ref.star").particles["_rlnImageName"].tolist() == [
+        "4@stack.mrcs", "2@stack.mrcs",
+    ]
+    assert np.load(output / "mov/selected_mov.cs", allow_pickle=False)["uid"].tolist() == [101, 103]
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_failed_moving_group_export_keeps_target_consistent(tmp_path, overwrite):
+    from cryorole.cli.main import main
+
+    run, _ref, _mov, _selection_path = _make_run_bundle(tmp_path, mov_suffix=".cs")
+    output = tmp_path / "out"
+    broken = tmp_path / "broken.csg"
+    broken.write_text("invalid group\n")
+    args = ["export", "--run-dir", str(run), "--selection-id", "sel", "--output-dir", str(output),
+            "--cryosparc-group-mov", str(broken)]
+    if overwrite:
+        output.mkdir()
+        (output / "export_report.json").write_text('{"previous": true}\n')
+        args.append("--overwrite")
+    with pytest.raises(SystemExit) as error:
+        main(args)
+    assert error.value.code == 2
+    if overwrite:
+        assert [p.name for p in output.iterdir()] == ["export_report.json"]
+        assert (output / "export_report.json").read_text() == '{"previous": true}\n'
+    else:
+        assert not output.exists()
+    assert not list(tmp_path.glob(".out.export-*"))
+
+
+def test_export_to_same_target_cannot_publish_during_overwrite(tmp_path, monkeypatch):
+    from cryorole.export import metadata_subset
+
+    run, _ref, _mov, selection_path = _make_run_bundle(tmp_path, mov_suffix=".cs")
+    output = tmp_path / "out"
+    policy = SelectionMetadataExportPolicy(run_dir=run, output_dir=output, domain="both", format="auto")
+    selection = _make_selection()
+    export_selection_metadata_subset(selection, policy=policy, selection_path=selection_path)
+
+    replace_output = metadata_subset.os.replace
+
+    def attempt_second_publication(source, target):
+        replace_output(source, target)
+        if source == output:
+            with pytest.raises(FileExistsError, match="Another export is publishing"):
+                export_selection_metadata_subset(selection, policy=policy, selection_path=selection_path)
+
+    monkeypatch.setattr(metadata_subset.os, "replace", attempt_second_publication)
+    report = export_selection_metadata_subset(
+        selection,
+        policy=SelectionMetadataExportPolicy(
+            run_dir=run, output_dir=output, domain="both", format="auto", overwrite=True,
+        ),
+        selection_path=selection_path,
+    )
+    assert Path(report["outputs"]["ref_metadata"]).is_file()
+    assert Path(report["outputs"]["mov_metadata"]).is_file()
+    assert not list(tmp_path.glob(".out.export-*"))
+
+
+def test_export_legacy_parent_csv_mapping(tmp_path):
+    from cryorole.cli.main import main
+
+    run, _ref, _mov, _selection_path = _make_run_bundle(tmp_path, mov_suffix=".cs")
+    raw = run / "data/raw_landscape.npz"
+    raw.unlink()
+    pd.DataFrame({"particle_key": ["p0", "p1", "p2", "p3", "p4"], "ref_source_row_id": [0, 1, 2, 3, 4],
+                  "mov_source_row_id": [4, 3, 2, 1, 0]}).to_csv(raw.with_suffix(".csv"), index=False)
+    output = tmp_path / "legacy"
+    assert main(["export", "--run-dir", str(run), "--selection-id", "sel", "--output-dir", str(output)]) == 0
+    assert read_relion_star(output / "ref/selected_ref.star").particles["_rlnImageName"].tolist() == [
+        "4@stack.mrcs", "2@stack.mrcs",
+    ]
+    assert np.load(output / "mov/selected_mov.cs", allow_pickle=False)["uid"].tolist() == [101, 103]

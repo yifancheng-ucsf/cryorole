@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
+from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, TypeVar, cast
 
-from cryorole.errors import CryoroleError
+from cryorole.errors import CryoroleError, classify_exception
 from cryorole.logs import notify_user
 from cryorole.workflow.resolve import (
     Resolved,
@@ -16,6 +17,24 @@ from cryorole.workflow.resolve import (
     resolve_selection_id,
 )
 from cryorole.workflows.progress import CancelToken, ProgressCallback
+
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _user_errors(function: _F) -> _F:
+    """Keep actionable service errors consistent at every public API boundary."""
+
+    @wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return function(*args, **kwargs)
+        except CryoroleError:
+            raise
+        except (ValueError, OSError, NotImplementedError) as exc:
+            raise classify_exception(exc) from exc
+
+    return cast(_F, wrapped)
 
 
 def _build(cls, values: Mapping[str, Any], *, what: str):
@@ -74,6 +93,7 @@ def _input_policies(ref, mov, *, row_aligned, allow_low_overlap, identity_mode, 
 # --- inputs ------------------------------------------------------------------
 
 
+@_user_errors
 def preflight(
     ref: str | Path,
     mov: str | Path,
@@ -109,6 +129,7 @@ def preflight(
     return run_preflight(request)
 
 
+@_user_errors
 def run(
     ref: str | Path,
     mov: str | Path,
@@ -157,6 +178,7 @@ def run(
 # --- downstream --------------------------------------------------------------
 
 
+@_user_errors
 def canonicalize(run_dir: str | Path | None = None, *, canonical_id: str = "default", **options: Any):
     """Fit (or with ``use_frame=`` apply) a canonical frame; returns ``CanonicalizeResult``."""
 
@@ -172,6 +194,7 @@ def canonicalize(run_dir: str | Path | None = None, *, canonical_id: str = "defa
     return canonicalize_bundle(request)
 
 
+@_user_errors
 def visualize(
     run_dir: str | Path | None = None,
     *,
@@ -205,6 +228,30 @@ def visualize(
     return _visualize(request)
 
 
+@_user_errors
+def open_landscape(
+    run_dir: str | Path | None = None,
+    *,
+    space: str = "raw",
+    canonical_id: str | None = None,
+):
+    """Load one landscape of a completed bundle for interactive display (GUI, notebooks).
+
+    Returns a ``LandscapeView``: display filtering, the deterministic 3D sample,
+    colour range, projection images and histograms follow ``cryorole visualize``.
+    Opening is read-only; explicit ``.confirm`` and ``.save_figures`` write
+    standard artifacts. ``run_dir`` and ``canonical_id`` resolve as in ``visualize``.
+    """
+
+    from cryorole.interactive.landscape_view import LandscapeView
+
+    records: dict[str, dict[str, str]] = {}
+    resolved_run = _run_dir(run_dir, records)
+    resolved_canonical = _canonical(resolved_run, space, canonical_id, records)
+    return LandscapeView(resolved_run, space=space, canonical_id=resolved_canonical if space == "canonical" else None)
+
+
+@_user_errors
 def select(
     run_dir: str | Path | None = None,
     *,
@@ -248,6 +295,7 @@ def select(
     return create_selection(request)
 
 
+@_user_errors
 def export(
     run_dir: str | Path | None = None,
     *,
@@ -259,8 +307,18 @@ def export(
     relocated_ref: str | Path | None = None,
     relocated_mov: str | Path | None = None,
     allow_unverified_source: bool = False,
+    cryosparc_group_ref: str | Path | None = None,
+    cryosparc_group_mov: str | Path | None = None,
+    mirror_cryosparc_group: bool = True,
 ) -> dict[str, Any]:
-    """Write STAR/CS subsets for a selection by recorded source-row IDs; returns the export report."""
+    """Write STAR/CS subsets for a selection by recorded source-row IDs; returns the export report.
+
+    For a CryoSPARC source, the source job's result group (.csg) is mirrored when one is
+    given (``cryosparc_group_ref/_mov``) or is the only one next to the source file, so the
+    subset can go back through Import Result Group; ``report["next_steps"]`` says how. The
+    group is checked before anything is written; ``mirror_cryosparc_group=False`` writes the
+    .cs subsets alone.
+    """
 
     from cryorole.export import export_selection_metadata_subset, read_selection_json
     from cryorole.models.policies import SelectionMetadataExportPolicy
@@ -289,14 +347,44 @@ def export(
             relocated_mov=relocated_mov,
             allow_unverified_source=allow_unverified_source,
             resolved_by=records,
+            cryosparc_group_ref=cryosparc_group_ref,
+            cryosparc_group_mov=cryosparc_group_mov,
+            mirror_cryosparc_group=mirror_cryosparc_group,
         ),
         selection_path=selection_path,
     )
 
 
+@_user_errors
+def inspect_input(path: str | Path):
+    """Which particle metadata file to use for a .cs/.star file or a CryoSPARC/RELION job folder.
+
+    Returns ``InputInspection`` (``.chosen`` is None when the folder has several candidates).
+    Reads nothing beyond file names, ``.csg`` files and row counts; nothing is written.
+    """
+
+    from cryorole.io.job_folders import inspect_input as _inspect
+
+    return _inspect(path)
+
+
+@_user_errors
+def export_preview(run_dir: str | Path | None = None, *, domain: str = "both") -> dict[str, Any]:
+    """Per domain: the source file and format an export would use and, for CryoSPARC, the .csg found.
+
+    Writes and hashes nothing (the export itself verifies the sources).
+    """
+
+    from cryorole.export import preview_metadata_export
+
+    records: dict[str, dict[str, str]] = {}
+    return preview_metadata_export(_run_dir(run_dir, records), domain=domain)
+
+
 # --- RELION alignment --------------------------------------------------------
 
 
+@_user_errors
 def align(ref: str | Path, mov: str | Path, **options: Any) -> dict[str, Any]:
     """Align two RELION STAR files exactly (see ``cryorole align``); returns the align report.
 
@@ -310,6 +398,7 @@ def align(ref: str | Path, mov: str | Path, **options: Any) -> dict[str, Any]:
     return align_star_files(ref=ref, mov=mov, **options)
 
 
+@_user_errors
 def fix_subtract_coordinates(target: str | Path, **options: Any) -> dict[str, Any]:
     """Write a coordinate-corrected copy of a recentred RELION subtraction; returns the report."""
 
@@ -321,6 +410,7 @@ def fix_subtract_coordinates(target: str | Path, **options: Any) -> dict[str, An
 # --- state -------------------------------------------------------------------
 
 
+@_user_errors
 def status(run_dir: str | Path | None = None) -> dict[str, Any]:
     """Artifact-derived bundle status (``bundle_status`` is completed/legacy/incomplete/failed/missing)."""
 
@@ -332,6 +422,7 @@ def status(run_dir: str | Path | None = None) -> dict[str, Any]:
     return payload
 
 
+@_user_errors
 def next_actions(run_dir: str | Path | None = None) -> list[dict[str, Any]]:
     """Conservative next commands derived from the bundle's artifacts."""
 

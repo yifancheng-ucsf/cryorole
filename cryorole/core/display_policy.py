@@ -196,3 +196,47 @@ def sort_display_indices(indices, values, *, order: str) -> np.ndarray:
     elif order != "ascending":
         raise ValueError("display sort order must be none, ascending, or descending")
     return selected[ranked]
+
+
+def visible_value_raster(
+    x,
+    y,
+    values,
+    *,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    width: int,
+    height: int,
+    order: str = "ascending",
+) -> np.ndarray:
+    """Rasterise points to one cell per screen pixel holding the visible value.
+
+    Points drawn in ``order`` (as a scatter would draw them) leave the largest
+    value visible in a pixel for ``ascending`` and ``none``, the smallest for
+    ``descending``. Returns a ``(height, width)`` float array, row 0 at
+    ``y_range[0]``; empty cells are NaN. Shared by the density figures and the
+    desktop GUI, so both show the same picture.
+    """
+
+    if order not in {"none", "ascending", "descending"}:
+        raise ValueError("display sort order must be none, ascending, or descending")
+    width = max(1, int(width))
+    height = max(1, int(height))
+    x0, x1 = (float(v) for v in x_range)
+    y0, y1 = (float(v) for v in y_range)
+    column = np.floor((np.asarray(x, dtype=float) - x0) / (x1 - x0) * width)
+    row = np.floor((np.asarray(y, dtype=float) - y0) / (y1 - y0) * height)
+    values = np.asarray(values, dtype=float)
+    inside = (column >= 0) & (column < width) & (row >= 0) & (row < height) & ~np.isnan(values)
+    cell = row[inside].astype(np.int64) * width + column[inside].astype(np.int64)
+    if order == "descending":
+        grid = np.full(width * height, np.inf)
+        np.minimum.at(grid, cell, values[inside])
+    else:
+        grid = np.full(width * height, -np.inf)
+        np.maximum.at(grid, cell, values[inside])
+    occupied = np.zeros(width * height, dtype=bool)
+    occupied[cell] = True
+    grid[~occupied] = np.nan
+    return grid.reshape(height, width)
+

@@ -99,6 +99,8 @@ class ConventionResolver:
             raise ValueError("RELION source semantics must be passive")
         if self.policy.internal_semantics != "active":
             raise ValueError("Internal rotation semantics must be active")
+        if self.policy.degrees is not True:
+            raise ValueError("RELION source angles require degrees=True")
         if self.policy.conversion_rule != IMPLEMENTED_RELION_CONVERSION_RULE:
             raise ValueError(
                 "ConventionPolicy conversion_rule does not match the implemented "
@@ -112,6 +114,8 @@ class ConventionResolver:
             raise ValueError("CryoSPARC source semantics must be 'backprojection'")
         if self.policy.internal_semantics != "active":
             raise ValueError("Internal rotation semantics must be active")
+        if self.policy.degrees is not False:
+            raise ValueError("CryoSPARC pose vectors use radians and require degrees=False")
         if self.policy.conversion_rule != IMPLEMENTED_CRYOSPARC_CONVERSION_RULE:
             raise ValueError(
                 "ConventionPolicy conversion_rule does not match the implemented "

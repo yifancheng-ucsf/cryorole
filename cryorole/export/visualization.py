@@ -19,6 +19,7 @@ from cryorole.core.display_policy import (
     resolve_color_scale as resolve_shared_color_scale,
     resolve_display_indices,
     sort_display_indices,
+    visible_value_raster,
 )
 from cryorole.core.euler_conventions import RAW_EULER_ANGLE_COLUMNS, resolve_euler_convention
 from cryorole.export.landscape import write_json_artifact
@@ -76,6 +77,13 @@ STYLE_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+# "scatter" draws every point as a marker. "density" draws each 2D projection as
+# an image with one cell per screen pixel holding the value of the point that
+# would be visible there (the largest colour value for ascending draw order),
+# so the picture matches the scatter but costs the same for 10k or 1M points.
+POINT_RENDERINGS = ("scatter", "density")
+
+
 def write_landscape_visualizations(
     landscape: Landscape,
     output_dir: str | Path,
@@ -119,12 +127,24 @@ def write_landscape_visualizations(
     artifact_layout: str = "flat",
     selection_metadata: Mapping[str, Any] | None = None,
     output_profile: str = "full",
+    write_individual_projections: bool | None = None,
+    point_rendering: str = "scatter",
 ) -> dict[str, Any]:
-    """Write display-only table, static figures, and optional debug CSVs."""
+    """Write display-only table, static figures, and optional debug CSVs.
+
+    ``write_individual_projections`` controls the separate per-panel PNGs of the
+    run-bundle layout (each panel is also in the 3-view figure). ``None`` keeps the
+    historical behaviour: written for ``output_profile="full"``.
+    """
 
     _ensure_matplotlib_available()
     if output_profile not in {"full", "quicklook"}:
         raise ValueError("output_profile must be 'full' or 'quicklook'")
+    if point_rendering not in POINT_RENDERINGS:
+        raise ValueError(f"point_rendering must be one of {POINT_RENDERINGS}, got {point_rendering!r}")
+    individual_projections = (
+        output_profile == "full" if write_individual_projections is None else bool(write_individual_projections)
+    ) and output_profile == "full"
     if output_profile == "quicklook" and (
         write_projection_csvs or generate_histograms or generate_axis_direction_map
     ):
@@ -180,6 +200,7 @@ def write_landscape_visualizations(
         euler_axis_limits=euler_axis_limits,
     )
     _validate_axis_limits(style_options["axis_limits"], representations)
+    style_options["point_rendering"] = point_rendering
     resolved_display_filter_mode, resolved_display_threshold = _resolve_display_filter(
         data[display_density_field],
         display_top_fraction=display_top_fraction,
@@ -213,6 +234,7 @@ def write_landscape_visualizations(
         artifact_layout=artifact_layout,
         display_table_filename=display_table_filename,
         output_profile=output_profile,
+        write_individual_projections=individual_projections,
     )
     _ensure_visualization_paths_available(expected_paths, overwrite=overwrite)
 
@@ -286,7 +308,7 @@ def write_landscape_visualizations(
                     color_vmin=resolved_color_vmin,
                     color_vmax=resolved_color_vmax,
                     artifact_layout=artifact_layout,
-                    write_individual_projections=output_profile == "full",
+                    write_individual_projections=individual_projections,
                 )
             )
             if output_profile == "full":
@@ -462,6 +484,7 @@ def write_landscape_visualizations(
         "output_profile": output_profile,
         "full_landscape_table": full_landscape_table,
         "figure_point_rasterized": True,
+        "point_rendering": point_rendering,
         "generated_histograms": generated_histograms,
         "generated_axis_direction_map": generated_axis_direction_map,
         "generated_files": generated_files,
@@ -548,8 +571,8 @@ def _validate_visualization_inputs(
         raise ValueError("color_vmin must be less than color_vmax")
     if point_size is not None and point_size <= 0:
         raise ValueError("point_size must be positive")
-    if point_alpha is not None and not 0.0 < point_alpha <= 1.0:
-        raise ValueError("point_alpha must be > 0 and <= 1")
+    if point_alpha is not None and not 0.0 <= point_alpha <= 1.0:
+        raise ValueError("point_alpha must be >= 0 and <= 1")
     if figure_width is not None and figure_width <= 0:
         raise ValueError("figure_width must be positive")
     if figure_height is not None and figure_height <= 0:
@@ -791,6 +814,7 @@ def _expected_visualization_paths(
     artifact_layout: str,
     display_table_filename: str | None,
     output_profile: str,
+    write_individual_projections: bool,
 ) -> list[Path]:
     paths = []
     if output_profile == "full":
@@ -821,7 +845,7 @@ def _expected_visualization_paths(
                         else f"{output_prefix}{source}_{rep}_cloud_3d.{fmt}"
                     )
                     paths.append(output_dir / cloud_name)
-                if artifact_layout == "run_bundle" and output_profile == "full":
+                if artifact_layout == "run_bundle" and write_individual_projections:
                     projections = EULER_PROJECTIONS if rep == "euler" else ROT_VECTOR_PROJECTIONS
                     for projection_name, _, _ in projections:
                         paths.append(
@@ -978,19 +1002,23 @@ def _write_2d_figure(
         constrained_layout=True,
     )
     colors = np.asarray(data.iloc[indices][color_field], dtype=float)
+    density_rendering = style_options.get("point_rendering", "scatter") == "density"
     scatter = None
+    if density_rendering:
+        scatter = _color_mappable(colors, style_options["color_map"], color_vmin, color_vmax)
     for axis, (projection_name, axis_a, axis_b) in zip(axes, projections):
-        scatter = axis.scatter(
-            coordinates[indices, axis_a],
-            coordinates[indices, axis_b],
-            c=colors,
-            s=style_options["point_size"],
-            cmap=style_options["color_map"],
-            alpha=style_options["point_alpha"],
-            vmin=color_vmin,
-            vmax=color_vmax,
-            rasterized=True,
-        )
+        if not density_rendering:
+            scatter = axis.scatter(
+                coordinates[indices, axis_a],
+                coordinates[indices, axis_b],
+                c=colors,
+                s=style_options["point_size"],
+                cmap=style_options["color_map"],
+                alpha=style_options["point_alpha"],
+                vmin=color_vmin,
+                vmax=color_vmax,
+                rasterized=True,
+            )
         axis.set_title(projection_name.replace("_", "-"))
         axis.set_xlabel(axis_names[axis_a])
         axis.set_ylabel(axis_names[axis_b])
@@ -1000,8 +1028,12 @@ def _write_2d_figure(
         axis_b_limits = style_options["axis_limits"].get(axis_names[axis_b])
         if axis_a_limits is not None:
             axis.set_xlim(axis_a_limits)
+        elif density_rendering:
+            axis.set_xlim(_padded_limits(coordinates[indices, axis_a]))
         if axis_b_limits is not None:
             axis.set_ylim(axis_b_limits)
+        elif density_rendering:
+            axis.set_ylim(_padded_limits(coordinates[indices, axis_b]))
     if scatter is not None:
         if style_options["colorbar_position"] == "bottom":
             figure.colorbar(
@@ -1014,6 +1046,20 @@ def _write_2d_figure(
             )
         else:
             figure.colorbar(scatter, ax=axes.ravel().tolist(), label=_colorbar_label(color_field))
+    if density_rendering:
+        # Solve the layout first so each image gets one cell per screen pixel.
+        figure.draw_without_rendering()
+        figure.set_layout_engine(None)
+        for axis, (_projection_name, axis_a, axis_b) in zip(axes, projections):
+            _draw_visible_value_raster(
+                axis,
+                coordinates[indices, axis_a],
+                coordinates[indices, axis_b],
+                colors,
+                mappable=scatter,
+                sort_order=style_options["sort_points_by_color"],
+                equal_aspect=style_options["aspect"] == "equal",
+            )
     generated = {}
     for fmt in formats:
         path = output_dir / _triptych_figure_name(
@@ -1404,6 +1450,74 @@ def _percentage_weights(n_points: int) -> np.ndarray:
     if n_points == 0:
         return np.asarray([], dtype=float)
     return np.ones(n_points, dtype=float) * (100.0 / n_points)
+
+
+def _color_mappable(colors: np.ndarray, color_map: str, vmin: float | None, vmax: float | None):
+    """A colour mapping identical to what ``Axes.scatter(c=colors, vmin, vmax)`` builds."""
+
+    import matplotlib.cm
+    import matplotlib.colors
+
+    mappable = matplotlib.cm.ScalarMappable(
+        norm=matplotlib.colors.Normalize(vmin=vmin, vmax=vmax),
+        cmap=color_map,
+    )
+    mappable.set_array(colors)
+    mappable.autoscale_None()
+    return mappable
+
+
+def _padded_limits(values: np.ndarray, margin: float = 0.05) -> tuple[float, float]:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return (-1.0, 1.0)
+    low, high = float(finite.min()), float(finite.max())
+    span = high - low if high > low else 1.0
+    return (low - margin * span, high + margin * span)
+
+
+def _draw_visible_value_raster(
+    axis,
+    x: np.ndarray,
+    y: np.ndarray,
+    values: np.ndarray,
+    *,
+    mappable,
+    sort_order: str,
+    equal_aspect: bool,
+) -> None:
+    """Draw points as one image cell per screen pixel, holding the visible value.
+
+    Points are drawn in ``sort_order`` in the scatter version, so the value seen
+    in a pixel is the largest (ascending, and "none" by convention) or the
+    smallest (descending) value that falls in it.
+    """
+
+    bbox = axis.get_window_extent()
+    x0, x1 = axis.get_xlim()
+    y0, y1 = axis.get_ylim()
+    grid = visible_value_raster(
+        x,
+        y,
+        values,
+        x_range=(x0, x1),
+        y_range=(y0, y1),
+        width=max(1, int(round(bbox.width))),
+        height=max(1, int(round(bbox.height))),
+        order=sort_order,
+    )
+    axis.imshow(
+        grid,
+        origin="lower",
+        extent=(x0, x1, y0, y1),
+        cmap=mappable.get_cmap(),
+        norm=mappable.norm,
+        interpolation="nearest",
+        aspect="equal" if equal_aspect else "auto",
+    )
+    axis.set_xlim(x0, x1)
+    axis.set_ylim(y0, y1)
 
 
 def _plot_indices(

@@ -17,6 +17,8 @@ from cryorole.animation.chimerax import ChimeraXExecutionError, execute_chimerax
 from cryorole.animation.manifest import write_animation_manifest
 from cryorole.animation.transforms import load_explicit_scene_basis, validate_scene_basis
 from cryorole.canonicalize.transforms import validate_canonical_transform
+from cryorole.provenance.derived_sources import frame_input_paths
+from cryorole.provenance.output_paths import protect_input_directory
 
 
 CANONICAL_VIEWS_SCHEMA_VERSION = "2"
@@ -139,9 +141,14 @@ def run_canonical_views(args: Any) -> CanonicalViewsResult:
         raise ValueError(f"Run directory does not exist: {run_dir}")
     if not session.is_file():
         raise ValueError(f"ChimeraX session does not exist: {session}")
+    protected_sources = [Path(args.run_dir), Path(args.chimerax_session)]
+    protected_sources.extend(frame_input_paths(
+        Path(args.run_dir) / "canonical" / args.canonical_id / "canonical_frame.json"
+    ))
+    protected_sources.extend(Path(value) for value in (args.map_frame_transform, args.chimerax_bin) if value)
     output_dir = _prepare_output_directory(
         Path(args.output_dir),
-        protected=(run_dir, session),
+        protected=tuple(protected_sources),
         overwrite=bool(args.overwrite),
     )
     manifest_path = output_dir / "canonical_views.json"
@@ -363,6 +370,7 @@ def _prepare_output_directory(
     protected: Sequence[Path],
     overwrite: bool,
 ) -> Path:
+    protect_input_directory(path, protected)
     output = path.resolve()
     for source in protected:
         resolved = source.resolve()

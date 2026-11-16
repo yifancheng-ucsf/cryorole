@@ -1,5 +1,9 @@
 # Workflow UX Tutorial
 
+For the same workflow in a desktop window, including saved-selection review
+and standard figure export, see [Desktop GUI](gui.md). Offscreen checks cover
+2D/1D and artifact behavior; native desktop/3D acceptance remains separate.
+
 This tutorial follows the production workflow without hiding scientific
 decisions. The compact path is:
 
@@ -50,6 +54,12 @@ duplicate/collision examples, overlap counts, transparent memory/disk formulas
 and assumptions, and exact commands. Resource numbers are estimates, not
 guarantees.
 
+In the desktop Inputs page, choosing another file immediately clears the old
+file choice and readiness until the new inspection finishes. If several file
+checks overlap, only the latest choice can update the run inputs. Changing an
+input or parameter also invalidates an in-progress preflight result; Start run
+waits for the current inputs and options to pass their own checks.
+
 ## 3. Run and inspect actual state
 
 ```bash
@@ -59,6 +69,9 @@ cryorole next --run-dir my_run
 ```
 
 Run revalidates source identity and publishes the bundle transactionally.
+Without `--overwrite`, publication refuses a destination created by another run
+while computation was in progress. A simultaneous publisher for the same
+destination must finish before retrying.
 `status` derives state from the manifest, bundle marker, raw NPZ, source hashes,
 canonical frames, visualizations, selections, and exports. `next` produces
 exact commands labelled required, recommended, or optional. It does not treat
@@ -79,6 +92,12 @@ cryorole canonicalize --run-dir my_run
 
 Canonicalization helps interpretation; it does not replace raw facts or write
 display coordinates back to STAR/CS poses.
+
+Derived output directories must be separate from their input landscapes, frames
+and configuration files, even with `--overwrite`. When applying an existing
+frame, choose another canonical ID or a separate output directory. Visualization
+accepts `--opacity 0` through `1`; zero hides the points while retaining axes
+and the color scale.
 
 RV means rotation vector: its direction is the rotation axis and its magnitude
 is the rotation angle in radians. EA means the public derived Euler display,
@@ -113,6 +132,11 @@ the same SO(3) radius evaluator used by CLI selection.
 
 An evaluated draft is not a Selection and writes no scientific artifact. You
 can download draft/preview data for review, but export cannot consume it.
+Python draft reports and display masks are detached copies: editing them does
+not change the internally evaluated particles or the geometry used by Confirm.
+Change the centre or radius by evaluating a new draft before confirming it.
+Equivalent selection commands preserve the full run path, including spaces
+or words that also appear in internal placeholder names.
 
 ## 6. Confirm a scientific Selection
 
@@ -142,15 +166,27 @@ selection table in `docs/cli_reference.md` for units and dependencies. Selection
 success guidance includes the saved name and an export command on stderr;
 stdout remains the output directory.
 
+Selection files and an optional selected-derived landscape are saved as one
+group. A failed write keeps an existing selection unchanged. When overwriting,
+request `--write-selected-landscape` again to create a landscape for the new
+subset; otherwise the old derived landscape is removed. Unrelated files remain.
+Metadata selection and split-by-value preserve distinct large integer labels
+in RELION sources, including values above the exact-integer range of floats.
+
 ## 7. Export without reselecting
 
 ```bash
 cryorole export --run-dir my_run --selection-id state_1 --domain both
 ```
 
-Export consumes the confirmed Selection and recorded source-row provenance. It
+Export checks the confirmed Selection against the parent run's source-row
+mapping before publishing the requested subsets. It
 verifies each source hash, does not rematch or reselect, does not modify source
 files, and does not write canonical/display coordinates as physical poses.
+Choose an output directory separate from the recorded input paths and any
+explicitly relocated inputs. `--overwrite` can replace an earlier export but
+cannot replace an input symlink inside that directory, even when the source
+file itself is elsewhere. Input links outside the export directory are valid.
 
 ## 8. Optional guide
 
@@ -170,3 +206,21 @@ Non-interactive guide prints a plan and never waits. `--execute-run` is an
 explicit opt-in to execute a ready run. Guide never silently enables row
 alignment/low overlap, chooses canonicalization or a neighborhood, creates or
 overwrites a Selection, or exports metadata.
+
+### Evaluated draft snapshots
+
+Changing the browser's center or radius clears the evaluated draft and disables
+Confirm until a new exact evaluation finishes. Display filters and representation
+changes remain display-only. Picking considers only visible particles; top-fraction
+filtering sorts once per redraw, and large display samples avoid argument-count
+limits when calculating plot/color bounds.
+
+Each evaluated result has a `draft_id`. HTTP Confirm must return that ID together
+with the session/run/landscape identity; a missing or stale ID stops before writing.
+Reload older Explore pages after upgrading. Concurrent evaluation publishes one
+complete snapshot at a time, and confirmation retains the snapshot it approved even
+if another evaluation finishes during source revalidation. The Python session's
+optional `expected_draft_id` supplies the same check, and the desktop view always
+uses it. Confirmed Selection interaction provenance records the evaluated draft ID.
+Initial Explore top-fraction display filtering uses the shared cutoff policy and
+retains tied values before deterministic sampling, matching other display paths.

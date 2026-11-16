@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -46,6 +47,26 @@ class KeySpec:
     float_tolerances: Mapping[str, float] = field(default_factory=dict)  # canonical name → tolerance
     path_mode: str = "exact"
 
+    def __post_init__(self):
+        if len(self.ref_columns) != len(self.mov_columns):
+            raise ValueError("Key columns must have parallel ref and mov lists")
+        tolerances = normalize_float_tolerances(self.float_tolerances)
+        changed = True
+        while changed:
+            changed = False
+            for ref, mov in zip(self.ref_columns, self.mov_columns):
+                ref, mov = canonical_column_name(ref), canonical_column_name(mov)
+                a, b = tolerances.get(ref), tolerances.get(mov)
+                if a is not None and b is not None and a != b:
+                    raise ValueError(f"Paired key columns {ref} and {mov} require the same tolerance; unit conversion is not implicit")
+                if a is not None and b is None:
+                    tolerances[mov] = a
+                    changed = True
+                elif b is not None and a is None:
+                    tolerances[ref] = b
+                    changed = True
+        object.__setattr__(self, "float_tolerances", tolerances)
+
     @property
     def is_cross_column(self) -> bool:
         return any(canonical_column_name(a) != canonical_column_name(b) for a, b in zip(self.ref_columns, self.mov_columns))
@@ -75,8 +96,8 @@ def normalize_float_tolerances(float_tolerances: Mapping[str, float]) -> dict[st
             value = float(tolerance)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid --float-tol value for {column}: {tolerance}") from exc
-        if value <= 0:
-            raise ValueError(f"--float-tol for {column} must be > 0")
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"--float-tol for {column} must be finite and > 0")
         out[canonical_column_name(column)] = value
     return out
 
@@ -107,7 +128,12 @@ def normalize_key_value(raw: str, column: str, spec: KeySpec) -> object:
             numeric = float(value)
         except ValueError as exc:
             raise ValueError(f"Column {column} was given --float-tol but value is not numeric: {raw}") from exc
-        return int(round(numeric / spec.float_tolerances[canonical]))
+        if not math.isfinite(numeric):
+            raise ValueError(f"Column {column} needs a finite numeric key value: {raw}")
+        scaled = numeric / spec.float_tolerances[canonical]
+        if not math.isfinite(scaled):
+            raise ValueError(f"Column {column} key divided by its tolerance must remain finite")
+        return int(round(scaled))
     if spec.path_mode != "exact" and _looks_like_path_column(column):
         if "@" in value:
             left, right = value.split("@", 1)

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 from typing import Callable, Mapping
 
-from cryorole.core.density import SLD_METRICS
+from cryorole.core.density import DEFAULT_SLD_METRIC, SLD_METRICS
 from cryorole.core.euler_conventions import EULER_CONVENTIONS
 
 _HIDDEN_HELP = argparse.SUPPRESS
@@ -26,6 +27,13 @@ class _StoreExplicit(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values)
         namespace.explicit_options = (*getattr(namespace, "explicit_options", ()), self.dest)
+
+
+class _AppendTuple(argparse.Action):
+    """Append one value while retaining immutable, reusable tuple defaults."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, (*getattr(namespace, self.dest, ()), values))
 
 
 def _package_version() -> str:
@@ -67,6 +75,7 @@ def build_command_parser(handlers: Mapping[str, Callable[..., int]]) -> argparse
     _add_next_parser(subparsers, handlers)
     _add_guide_parser(subparsers, handlers)
     _add_explore_parser(subparsers, handlers)
+    _add_gui_parser(subparsers, handlers)
     _add_visualize_parser(subparsers, handlers)
     _add_animate_parser(subparsers, handlers)
     _add_canonical_views_parser(subparsers, handlers)
@@ -96,6 +105,12 @@ _COMMAND_EXAMPLES = {
         "cryorole guide --run-dir my_run",
     ),
     "explore": ("cryorole explore --run-dir my_run --space canonical",),
+    "gui": (
+        "cryorole gui",
+        "cryorole gui --run-dir my_run",
+        "cryorole gui --no-gl   # 2D and 1D views only; skips the OpenGL check",
+        "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia cryorole gui   # monitor on an onboard chip",
+    ),
     "visualize": (
         "cryorole visualize --run-dir my_run",
         "cryorole visualize --run-dir my_run --space canonical --view 2d,1d --top-fraction 0.4",
@@ -161,7 +176,7 @@ def _add_align_parser(subparsers, handlers) -> None:
     )
     parser.add_argument(
         "--float-tol",
-        action="append",
+        action=_AppendTuple,
         default=(),
         type=_parse_float_tolerance,
         metavar="COL=TOL",
@@ -267,10 +282,10 @@ def _add_run_parser(subparsers, handlers) -> None:
     parser.add_argument(
         "--sld-metric",
         choices=SLD_METRICS,
-        default="rotvec_euclidean",
+        default=DEFAULT_SLD_METRIC,
         help=(
-            "SLD kNN distance metric. Default: rotvec_euclidean; "
-            "so3_geodesic is explicit opt-in."
+            "SLD kNN distance metric. Default: so3_geodesic; "
+            "rotvec_euclidean is a faster approximation for very large datasets."
         ),
     )
     parser.add_argument(
@@ -287,7 +302,7 @@ def _add_run_parser(subparsers, handlers) -> None:
     )
     parser.add_argument(
         "--identity-column",
-        action="append",
+        action=_AppendTuple,
         default=(),
         help=_HIDDEN_HELP,
     )
@@ -325,6 +340,18 @@ def _add_run_parser(subparsers, handlers) -> None:
         help="Replace an existing --output-dir bundle (published only after the new run completes).",
     )
     parser.add_argument("--no-visualize", action="store_true", help="Skip raw quick-look visualization.")
+    parser.add_argument(
+        "--jobs",
+        type=_jobs_value,
+        default="auto",
+        help="Processes for the quick-look figures: 1-3 or auto. Default: auto (up to 3, limited by CPU cores and free memory; 1 below 100k particles).",
+    )
+    parser.add_argument(
+        "--point-style",
+        choices=("scatter", "density"),
+        default="scatter",
+        help="How 2D projection figures draw points: scatter (default; one marker per point) or density (one image cell per screen pixel holding the visible SLD value; about 15x faster at 500k points, near-identical look, slightly thinner in sparse regions).",
+    )
     parser.add_argument("--quiet", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument("--verbose", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument("--profile-time", action="store_true", help=_HIDDEN_HELP)
@@ -367,8 +394,8 @@ def _add_preflight_parser(subparsers, handlers) -> None:
         help="Explicitly allow overlap below the public 50%% threshold.",
     )
     parser.add_argument(
-        "--sld-metric", choices=SLD_METRICS, default="rotvec_euclidean",
-        help="Prospective SLD metric. Default: rotvec_euclidean.",
+        "--sld-metric", choices=SLD_METRICS, default=DEFAULT_SLD_METRIC,
+        help="Prospective SLD metric. Default: so3_geodesic.",
     )
     parser.add_argument("--no-visualize", action="store_true", help="Estimate a run without previews.")
     parser.add_argument(
@@ -384,7 +411,7 @@ def _add_preflight_parser(subparsers, handlers) -> None:
         default="auto", help=_HIDDEN_HELP,
     )
     parser.add_argument("--identity-mode", default=None, help=_HIDDEN_HELP)
-    parser.add_argument("--identity-column", action="append", default=(), help=_HIDDEN_HELP)
+    parser.add_argument("--identity-column", action=_AppendTuple, default=(), help=_HIDDEN_HELP)
     parser.add_argument("--mapping-file", help=_HIDDEN_HELP)
     parser.set_defaults(handler=handlers["preflight"])
 
@@ -443,6 +470,20 @@ def _add_explore_parser(subparsers, handlers) -> None:
     parser.add_argument("--port", type=int, default=0, help="Loopback port; 0 selects an available port.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the default browser automatically.")
     parser.set_defaults(handler=handlers["explore"])
+
+
+def _add_gui_parser(subparsers, handlers) -> None:
+    parser = subparsers.add_parser(
+        "gui",
+        help='Open the desktop interface (install with: pip install "cryorole[gui]").',
+    )
+    parser.add_argument(
+        "--no-gl",
+        action="store_true",
+        help="Do not use OpenGL: no 3D view, and no OpenGL check at start-up.",
+    )
+    parser.add_argument("--run-dir", help="Run bundle to open in the View page. Omitted: open one from File > Open run.")
+    parser.set_defaults(handler=handlers["gui"])
 
 
 def _add_visualize_parser(subparsers, handlers) -> None:
@@ -622,6 +663,16 @@ def _add_animate_parser(subparsers, handlers) -> None:
         choices=("raw", "canonical", "explicit"),
         required=True,
     )
+    parser.add_argument(
+        "--ro-direction",
+        choices=("active", "legacy-inverse"),
+        default="active",
+        help=(
+            "How the moving model follows RO. active (default, validated): turn by "
+            "RO_target @ inverse(RO_baseline). legacy-inverse: the inverse, as in "
+            "movies made before 2026-10-12; only for reproducing them."
+        ),
+    )
     parser.add_argument("--map-frame-transform")
     parser.add_argument(
         "--euler-convention",
@@ -749,6 +800,18 @@ def _add_canonical_views_parser(subparsers, handlers) -> None:
     parser.set_defaults(handler=handlers["canonical_views"])
 
 
+def _jobs_value(text: str) -> int | str:
+    if text == "auto":
+        return text
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'auto'") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'auto'")
+    return value
+
+
 def _add_canonicalize_parser(subparsers, handlers) -> None:
     parser = subparsers.add_parser(
         "canonicalize",
@@ -772,6 +835,12 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
         action="store_true",
         help="Replace canonical/<canonical-id>/ only; the raw landscape and other frames are unchanged.",
     )
+    parser.add_argument(
+        "--write-csv",
+        action="store_true",
+        help="Also write canonical_landscape.csv. Off by default: it is large and canonical_landscape.npz holds the same data.",
+    )
+    # Deprecated: skipping the CSV is now the default.
     parser.add_argument("--no-csv", action="store_true", help=_HIDDEN_HELP)
     parser.add_argument(
         "--euler-convention",
@@ -819,6 +888,23 @@ def _add_canonicalize_parser(subparsers, handlers) -> None:
     )
     parser.add_argument("--use-frame", help="Existing canonical_frame.json to apply instead of fitting.")
     parser.add_argument("--no-visualize", action="store_true", help="Skip canonical quick-look visualization.")
+    parser.add_argument(
+        "--projection-panels",
+        action="store_true",
+        help="Also write each 2D projection panel as its own PNG (18 extra figures). The 3-view figures already show every panel.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=_jobs_value,
+        default="auto",
+        help="Processes for the preview figures: 1-3 or auto. Default: auto (up to 3, limited by CPU cores and free memory; 1 below 100k particles).",
+    )
+    parser.add_argument(
+        "--point-style",
+        choices=("scatter", "density"),
+        default="scatter",
+        help="How 2D projection figures draw points: scatter (default; one marker per point) or density (one image cell per screen pixel holding the visible SLD value; about 15x faster at 500k points, near-identical look, slightly thinner in sparse regions).",
+    )
     parser.set_defaults(handler=handlers["canonicalize"])
 
 
@@ -994,6 +1080,21 @@ def _add_export_source_verification_arguments(parser) -> None:
         action="store_true",
         help="Advanced legacy override for bundles that predate source hashes; recorded in export report.",
     )
+    parser.add_argument(
+        "--cryosparc-group-ref",
+        help="CryoSPARC result group (.csg) of the ref source job to mirror, e.g. PROJECT/J75/J75_particles.csg. "
+             "Omitted: the only one next to the ref .cs, if any.",
+    )
+    parser.add_argument(
+        "--cryosparc-group-mov",
+        help="As --cryosparc-group-ref, for the mov source.",
+    )
+    parser.add_argument(
+        "--no-cryosparc-group",
+        action="store_true",
+        help="Write the .cs subsets alone, without mirroring a CryoSPARC result group (.csg), e.g. when the "
+             "source job's passthrough files are not available.",
+    )
 
 
 def _add_manifest_parser(subparsers, handlers) -> None:
@@ -1085,8 +1186,8 @@ def _parse_float_tolerance(value: str) -> tuple[str, float]:
         tolerance = float(tolerance_raw)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("tolerance must be numeric") from exc
-    if tolerance <= 0:
-        raise argparse.ArgumentTypeError("tolerance must be > 0")
+    if not math.isfinite(tolerance) or tolerance <= 0:
+        raise argparse.ArgumentTypeError("tolerance must be finite and > 0")
     return column, tolerance
 
 

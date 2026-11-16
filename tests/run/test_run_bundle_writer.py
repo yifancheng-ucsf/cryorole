@@ -67,14 +67,15 @@ def test_incomplete_transactional_bundle_is_rejected(tmp_path) -> None:
         validate_completed_run_bundle(run_dir)
 
 
-def test_final_publish_failure_rolls_back_old_bundle(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt])
+def test_final_publish_failure_rolls_back_old_bundle(tmp_path, monkeypatch, error_type) -> None:
     target = tmp_path / "run"
     target.mkdir()
     sentinel = target / "old_bundle.txt"
     sentinel.write_text("unchanged", encoding="utf-8")
     real_replace = os.replace
 
-    with pytest.raises(OSError, match="injected final publish failure"):
+    with pytest.raises(error_type, match="injected final publish failure"):
         with RunBundleWriter(target, overwrite=True, run_id="commit-fail") as writer:
             _write_minimal_required_bundle(writer.path)
             staging = writer.path.resolve()
@@ -82,10 +83,85 @@ def test_final_publish_failure_rolls_back_old_bundle(tmp_path, monkeypatch) -> N
 
             def failing_replace(source, destination):
                 if Path(source).resolve() == staging and Path(destination).resolve() == resolved_target:
-                    raise OSError("injected final publish failure")
+                    raise error_type("injected final publish failure")
                 return real_replace(source, destination)
 
             monkeypatch.setattr("cryorole.run_bundle.writer.os.replace", failing_replace)
             writer.commit()
 
     assert sentinel.read_text(encoding="utf-8") == "unchanged"
+    assert not (tmp_path / ".run.publish-lock").exists()
+
+
+def test_two_prepared_runs_cannot_overwrite_without_permission(tmp_path) -> None:
+    target = tmp_path / "run"
+    with RunBundleWriter(target, run_id="winner") as first:
+        _write_minimal_required_bundle(first.path)
+        with pytest.raises(FileExistsError, match="already exists"):
+            with RunBundleWriter(target, run_id="loser") as second:
+                _write_minimal_required_bundle(second.path)
+                first.commit()
+                second.commit()
+
+    assert validate_completed_run_bundle(target, allow_legacy=False)["run_id"] == "winner"
+    assert (tmp_path / ".run.failed-loser").is_dir()
+    assert not (tmp_path / ".run.publish-lock").exists()
+
+
+def test_commit_is_idempotent(tmp_path) -> None:
+    with RunBundleWriter(tmp_path / "run", run_id="one-run") as writer:
+        _write_minimal_required_bundle(writer.path)
+        target = writer.commit()
+        state = (target / "bundle_state.json").read_bytes()
+        manifest = (target / "run_manifest.json").read_bytes()
+        assert writer.commit() == target
+        assert (target / "bundle_state.json").read_bytes() == state
+        assert (target / "run_manifest.json").read_bytes() == manifest
+
+
+def test_publish_lock_protects_gap_during_overwrite(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "run"
+    target.mkdir()
+    (target / "old.txt").write_text("old", encoding="utf-8")
+    real_replace = os.replace
+    checked = []
+    with RunBundleWriter(target, overwrite=True, run_id="winner") as first:
+        with RunBundleWriter(target, overwrite=True, run_id="contender") as second:
+            _write_minimal_required_bundle(first.path)
+            _write_minimal_required_bundle(second.path)
+
+            def concurrent_replace(source, destination):
+                result = real_replace(source, destination)
+                if Path(source) == target and ".previous-" in Path(destination).name:
+                    assert not target.exists()
+                    with pytest.raises(FileExistsError, match="Another run is publishing"):
+                        second.commit()
+                    checked.append(True)
+                return result
+
+            monkeypatch.setattr("cryorole.run_bundle.writer.os.replace", concurrent_replace)
+            first.commit()
+    assert checked == [True]
+    assert validate_completed_run_bundle(target, allow_legacy=False)["run_id"] == "winner"
+    assert not (tmp_path / ".run.publish-lock").exists()
+
+
+def test_backup_cleanup_failure_preserves_published_bundle(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "run"
+    target.mkdir()
+    (target / "old.txt").write_text("old", encoding="utf-8")
+
+    def failed_cleanup(*args, **kwargs):
+        raise OSError("injected backup cleanup failure")
+
+    monkeypatch.setattr("cryorole.run_bundle.writer._safe_remove_tree", failed_cleanup)
+    with pytest.raises(OSError, match="backup cleanup failure"):
+        with RunBundleWriter(target, overwrite=True, run_id="new-run") as writer:
+            _write_minimal_required_bundle(writer.path)
+            writer.commit()
+
+    assert validate_completed_run_bundle(target, allow_legacy=False)["run_id"] == "new-run"
+    assert (tmp_path / ".run.previous-new-run/old.txt").read_text(encoding="utf-8") == "old"
+    assert not (target / "failure_report.json").exists()
+    assert writer.commit() == target
+    assert not (tmp_path / ".run.publish-lock").exists()
