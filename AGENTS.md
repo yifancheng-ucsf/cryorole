@@ -63,9 +63,11 @@ Canonicalization, visualization, selection, and export already have a working co
 - Formal run consumption must revalidate source content identity, not only size and modification time.
 - CLI select and interactive Confirm must use the same standard Selection artifact writer.
 
-### Frontends: CLI and `cryorole.api`
+### Frontends: CLI, GUI and `cryorole.api`
 
-- Library code outside `cryorole/cli/` never calls `print`, `sys.exit`, `input` or `argparse` (enforced by `tests/architecture/test_service_boundaries.py`; the legacy script `workflows/rotate_landscape.py` is the only listed exception). User-relevant warnings go through `cryorole.logs.warn_user` / `notify_user`; progress goes through `ProgressReporter` (stderr for the CLI, a callback for the API).
+- Library code outside the two frontends, `cryorole/cli/` and `cryorole/gui/`, never calls `print`, `sys.exit`, `input` or `argparse` (enforced by `tests/architecture/test_service_boundaries.py`; the legacy script `workflows/rotate_landscape.py` is the only listed exception). User-relevant warnings go through `cryorole.logs.warn_user` / `notify_user`; progress goes through `ProgressReporter` (stderr for the CLI, a callback for the API).
+- The desktop GUI (`cryorole/gui/`, optional extra `pip install "cryorole[gui]"`, PySide6 + pyqtgraph) is a frontend like the CLI. It reaches cryoROLE only through `cryorole.api`, `cryorole.errors` and `cryorole.logs`, contains no science, and writes only the standard artifacts the API writes. Qt, pyqtgraph and OpenGL are imported only inside `cryorole/gui/`; `import cryorole` and the CLI work without them (enforced by `tests/architecture/test_gui_boundaries.py`).
+- Qt aborts the whole process when it cannot open a window or when an OpenGL widget finds no usable GLX configuration, and Python cannot catch that. The GUI therefore checks the Qt platform and OpenGL in a child process (`cryorole.gui.glprobe`, which builds the same pyqtgraph 3D widget) before it opens any window, and runs without the 3D view when OpenGL is unusable. `run`, `canonicalize` and Save figures run in a child process (`cryorole.gui.worker`) that calls `cryorole.api`, so their provenance is that of the API and a crash cannot take the GUI down. Never run matplotlib or other heavy Python work in a thread of the GUI process: beside Qt painting it can crash or hang the GUI (PySide6 on Python 3.10/3.11).
 - `cryorole.api` calls the same typed services as the CLI and must not import `cryorole.cli`. It never prints; it raises `CryoroleError(code, message, remedy)` for user-actionable problems.
 - Long operations accept a `CancelToken`, checked at stage boundaries; a cancelled run publishes nothing and leaves no staging or failed bundle.
 - Omitted `--run-dir` / `--canonical-id` / `--selection-id` are resolved only by `cryorole.workflow.resolve`, and only when exactly one candidate exists (run dir: current directory bundle, then `./cryorole_outputs`). Never pick one of several; list them. Print every implicit value and record it under `resolved_by` in the written report. `select` always requires an explicit `--selection-id`.
@@ -143,7 +145,7 @@ RO = R_ref^-1 R_mov
 - `data/raw_landscape.npz` is the production machine-readable raw landscape.
 - `data/raw_landscape.csv` is the user-facing raw table.
 - `cryorole run` must derive user-facing Euler columns with the recorded Euler convention policy. Public output uses extrinsic fixed-axis ZYX.
-- SLD defaults to Euclidean kNN distance in RO rotation-vector space. SO(3) geodesic SLD is explicit opt-in only; the resolved metric must be recorded.
+- SLD defaults to kNN SO(3) geodesic distance. Euclidean distance in RO rotation-vector space (`--sld-metric rotvec_euclidean`) is an explicit faster approximation for very large datasets; the resolved metric must be recorded.
 - Raw CSV Euler column names may remain simplified as `raw_ea_zyx_*`; reports/manifests own the intrinsic/extrinsic interpretation.
 - Full landscape JSON is debug-only and must be opt-in.
 - Production run backend should be array-native; DataFrame/object-column paths are compatibility/debug paths.

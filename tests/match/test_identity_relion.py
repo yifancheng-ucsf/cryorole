@@ -125,6 +125,22 @@ def test_relion_explicit_mapping_file_resolves_keys(tmp_path) -> None:
     assert resolved.report.identity_mode == "explicit_mapping_file"
 
 
+def test_mapping_keeps_numeric_text_keys_and_rejects_empty_keys(tmp_path) -> None:
+    table = pd.DataFrame(index=[0, 1])
+    mapping_file = tmp_path / "mapping.csv"
+    policy = IdentityPolicy(identity_mode="explicit_mapping_file", mapping_file=str(mapping_file))
+    mapping_file.write_text("source_row_id,particle_key\n0,0001\n1,001\n")
+    assert list(resolve_identity(table, source_type="relion", policy=policy).keys) == ["0001", "001"]
+    mapping_file.write_text("source_row_id,particle_key\n0,\n1,001\n")
+    with pytest.raises(IdentityResolutionError, match=r"missing identity.*particle_key.*0"):
+        resolve_identity(table, source_type="relion", policy=policy)
+
+
+def test_missing_component_is_rejected_before_building_a_composite_key() -> None:
+    table = pd.DataFrame({"series": ["ts1", "ts2"], "particle": [1, None]})
+    policy = IdentityPolicy.relion_user_columns(["series", "particle"])
+    with pytest.raises(IdentityResolutionError, match=r"missing identity.*particle.*1"):
+        resolve_identity(table, source_type="relion", policy=policy)
 def test_relion_row_aligned_identity_is_explicit_and_records_source_row_id() -> None:
     table = pd.DataFrame({"_rlnParticleName": ["opaque-a", "opaque-b"]})
     policy = IdentityPolicy(identity_mode="row_aligned")

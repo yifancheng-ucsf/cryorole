@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from decimal import Decimal, InvalidOperation
 
 import numpy as np
 import pandas as pd
@@ -596,13 +597,25 @@ def _resolve_metadata_column_name(columns, requested: str) -> str:
 def _coerce_source_row_id(value) -> int | None:
     if isinstance(value, (bool, np.bool_)):
         return None
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
     try:
         numeric = float(value)
     except (TypeError, ValueError):
         return None
     if not np.isfinite(numeric) or not numeric.is_integer():
         return None
-    return int(numeric)
+    # Decimal/exponent text must not round to a different integer via float.
+    try:
+        exact = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return int(exact) if exact == exact.to_integral_value() else None
 
 
 def _metadata_value_key(value) -> str | None:
@@ -610,11 +623,20 @@ def _metadata_value_key(value) -> str | None:
         return None
     text = str(value).strip()
     try:
+        return str(int(text))
+    except ValueError:
+        pass
+    try:
         numeric = float(text)
     except ValueError:
         return text
     if np.isfinite(numeric) and numeric.is_integer():
-        return str(int(numeric))
+        try:
+            exact = Decimal(text)
+        except InvalidOperation:
+            return text
+        if exact == exact.to_integral_value():
+            return str(int(exact))
     return text
 
 
@@ -773,6 +795,16 @@ def _default_selection_id(policy: SelectionPolicy) -> str:
             f"{policy.top_fraction:g}{artifact_suffix}"
         )
     if policy.selection_mode == "threshold_by_density":
+        if policy.threshold is None:
+            bounds = []
+            if policy.sld_min is not None:
+                bounds.append(f">={policy.sld_min:g}")
+            if policy.sld_max is not None:
+                bounds.append(f"<={policy.sld_max:g}")
+            return (
+                f"selection:{policy.selection_mode}:{policy.density_support_field}:"
+                + ":".join(bounds)
+            )
         return (
             f"selection:{policy.selection_mode}:{policy.density_support_field}:"
             f"{policy.threshold_operator}{policy.threshold:g}"

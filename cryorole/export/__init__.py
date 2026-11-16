@@ -22,6 +22,7 @@ _EXPORTS: dict[str, str] = {
     "build_run_manifest_payload": "cryorole.export.manifest",
     "write_run_manifest": "cryorole.export.manifest",
     "export_selection_metadata_subset": "cryorole.export.metadata_subset",
+    "preview_metadata_export": "cryorole.export.metadata_subset",
     "export_selection": "cryorole.export.selection_export",
     "read_selection_json": "cryorole.export.selection_export",
     "write_landscape_visualizations": "cryorole.export.visualization",
@@ -70,6 +71,7 @@ if TYPE_CHECKING:  # pragma: no cover - static analysers see the real names
     )
     from cryorole.export.metadata_subset import (  # noqa: F401
         export_selection_metadata_subset,
+        preview_metadata_export,
     )
     from cryorole.export.selection_export import (  # noqa: F401
         export_selection,

@@ -25,6 +25,7 @@ from cryorole.export import (
     write_raw_landscape_csv,
 )
 from cryorole.models.landscape import Landscape
+from cryorole.provenance.derived_sources import frame_input_paths, protect_derived_directory
 
 
 ROTATION_OPERATION = "moving_domain_local_right_rotation"
@@ -198,6 +199,15 @@ def rotate_landscape_bundle(
     )
 
     output_path = Path(output_dir).resolve()
+    inherited_frame = (
+        _find_parent_canonical_frame(requested_input, canonical_id)
+        if transform_source == "parent_run_canonical_frame" else None
+    )
+    protect_derived_directory(output_dir, (
+        requested_input, source_path, *frame_input_paths(canonical_frame or inherited_frame),
+        *(directory / name for directory in _parent_metadata_directories(requested_input, source_path)
+          for name in ("run_summary.json", "run_manifest.json")),
+    ))
     _validate_output_target(
         requested_input=requested_input.resolve(),
         source_path=source_path,
@@ -585,7 +595,7 @@ def _remove_stale_canonical_artifacts(
             path.unlink()
 
 
-def _read_parent_metadata(requested_input: Path, source_path: Path) -> list[dict[str, Any]]:
+def _parent_metadata_directories(requested_input: Path, source_path: Path) -> list[Path]:
     candidates: list[Path] = []
     if requested_input.is_dir():
         candidates.append(requested_input)
@@ -594,8 +604,12 @@ def _read_parent_metadata(requested_input: Path, source_path: Path) -> list[dict
             candidates.append(ancestor)
         if len(candidates) >= 5:
             break
+    return candidates
+
+
+def _read_parent_metadata(requested_input: Path, source_path: Path) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
-    for directory in candidates:
+    for directory in _parent_metadata_directories(requested_input, source_path):
         for filename in ("run_summary.json", "run_manifest.json"):
             path = directory / filename
             if path.exists():

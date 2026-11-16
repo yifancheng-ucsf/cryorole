@@ -27,16 +27,29 @@ def test_canonical_to_raw_round_trip():
 def test_active_delta_direction_and_nonidentity_baseline():
     identity = Rotation.identity()
     target = Rotation.from_euler("z", 30, degrees=True)
-    delta = ro_target_to_active_delta(target, identity)
+    delta = ro_target_to_active_delta(target, identity, direction="active")
     point = delta.apply([1.0, 0.0, 0.0])
-    assert np.allclose(point, [np.cos(np.pi / 6), -np.sin(np.pi / 6), 0], atol=1e-12)
+    assert np.allclose(point, [np.cos(np.pi / 6), np.sin(np.pi / 6), 0], atol=1e-12)
 
     baseline = Rotation.from_euler("x", 20, degrees=True)
-    expected = (target * baseline.inv()).inv()
+    expected = target * baseline.inv()
     assert np.allclose(
-        ro_target_to_active_delta(target, baseline).as_matrix(),
+        ro_target_to_active_delta(target, baseline, direction="active").as_matrix(),
         expected.as_matrix(),
     )
+
+
+def test_legacy_inverse_delta_reproduces_pre_2026_10_12_movies():
+    target = Rotation.from_euler("z", 30, degrees=True)
+    baseline = Rotation.from_euler("x", 20, degrees=True)
+    legacy = ro_target_to_active_delta(target, baseline, direction="legacy-inverse")
+    assert np.allclose(legacy.as_matrix(), (target * baseline.inv()).inv().as_matrix())
+
+
+@pytest.mark.parametrize("direction", [None, "", "passive", "inverse"])
+def test_active_delta_requires_a_known_direction(direction):
+    with pytest.raises(ValueError, match="RO density direction"):
+        ro_target_to_active_delta(Rotation.identity(), Rotation.identity(), direction=direction)
 
 
 def test_raw_to_scene_conjugation():

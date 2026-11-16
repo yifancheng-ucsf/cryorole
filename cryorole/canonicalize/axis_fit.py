@@ -153,11 +153,11 @@ def fit_axes_pca_svd(
 
 
 def _detect_near_degenerate_axes(singular_values: np.ndarray) -> bool:
-    nonzero = np.asarray(singular_values, dtype=float)
-    nonzero = nonzero[nonzero > 1e-12]
-    if nonzero.size < 2:
-        return False
-    return bool(np.any(np.isclose(nonzero[:-1], nonzero[1:], rtol=1e-3, atol=1e-12)))
+    spectrum = np.asarray(singular_values, dtype=float)
+    # Thin SVD of two points omits the third zero singular value. Keep all
+    # null directions: two of them leave the transverse PCA axes undefined.
+    spectrum = np.pad(spectrum, (0, max(0, 3 - spectrum.size)))
+    return bool(np.any(np.isclose(spectrum[:-1], spectrum[1:], rtol=1e-3, atol=1e-12)))
 
 
 def _complete_3d_axes(vh: np.ndarray) -> np.ndarray:

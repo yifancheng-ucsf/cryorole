@@ -175,4 +175,8 @@ def test_every_help_example_parses() -> None:
     parser = cli_main.build_parser()
     for examples in _COMMAND_EXAMPLES.values():
         for line in examples:
-            parser.parse_args(shlex.split(line.split("#")[0])[1:])
+            words = shlex.split(line.split("#")[0])
+            while words and "=" in words[0] and not words[0].startswith("-"):  # leading VAR=value settings
+                words.pop(0)
+            assert words[0] == "cryorole", line
+            parser.parse_args(words[1:])

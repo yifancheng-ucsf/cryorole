@@ -97,8 +97,11 @@ def _handler_for(session: ExploreSession):
                     self._json(200, result)
                     return
                 if path == "/api/confirm":
+                    if not isinstance(payload.get("draft_id"), str) or not payload["draft_id"]:
+                        raise ValueError("Reload Explore and evaluate the current draft before confirming")
                     result = session.confirm(
                         str(payload.get("selection_id", "")),
+                        expected_draft_id=payload["draft_id"],
                         expected_run_id=payload.get("run_id"),
                         expected_landscape_sha256=payload.get("landscape_sha256"),
                     )

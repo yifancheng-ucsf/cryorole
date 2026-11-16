@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from cryorole.export import (
     export_selection,
@@ -129,9 +130,17 @@ def export_metadata_command(args) -> int:
             relocated_mov=getattr(args, "relocated_mov", None),
             allow_unverified_source=bool(getattr(args, "allow_unverified_source", False)),
             resolved_by=getattr(args, "resolved_by", None),
+            cryosparc_group_ref=getattr(args, "cryosparc_group_ref", None),
+            cryosparc_group_mov=getattr(args, "cryosparc_group_mov", None),
+            mirror_cryosparc_group=not bool(getattr(args, "no_cryosparc_group", False)),
         ),
         selection_path=selection_path,
     )
+    for domain, steps in (report.get("next_steps") or {}).items():
+        if steps:
+            print(f"[{domain}] next steps:", file=sys.stderr)
+            for step in steps:
+                print(f"  {step}", file=sys.stderr)
     outputs = report.get("outputs", {})
     selected_keys_path = outputs.get("selected_particle_keys_txt")
     if selected_keys_path:

@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from cryorole.canonicalize.service import canonicalize_run_artifacts
-from cryorole.core.density import compute_landscape_density_arrays
+from cryorole.core.density import DEFAULT_SLD_METRIC, compute_landscape_density_arrays
 from cryorole.core.input_sanity import assess_ro_angles, same_input_file, sanity_warning_lines
 from cryorole.core.display_policy import max_displayed_density
 from cryorole.core.euler_conventions import RAW_EULER_ANGLE_COLUMNS, resolve_euler_convention
@@ -38,6 +38,7 @@ from cryorole.models.policies import (
 )
 from cryorole.preflight import PreflightRequest, run_preflight
 from cryorole.provenance import SourceIdentityGuard, build_source_identity
+from cryorole.provenance.output_paths import protect_input_directory
 from cryorole.run_bundle import RunBundleWriter
 from cryorole.visualize import QuickLookRequest, write_quicklook
 from cryorole.workflows.input_policy import (
@@ -69,7 +70,7 @@ class RunRequest:
     output_dir: str = "cryorole_outputs"
     row_aligned: bool = False
     allow_low_overlap: bool = False
-    sld_metric: str = "rotvec_euclidean"
+    sld_metric: str = DEFAULT_SLD_METRIC
     run_backend: str = "auto"
     identity_mode: str | None = None
     identity_column: tuple[str, ...] = ()
@@ -83,6 +84,10 @@ class RunRequest:
     manifest_output: str | None = None
     overwrite: bool = False
     no_visualize: bool = False
+    # Processes for the quick-look figures: None/"auto" or a positive integer.
+    jobs: int | str | None = None
+    # 2D projection drawing: "scatter" or "density" (see export.visualization.POINT_RENDERINGS).
+    point_style: str = "scatter"
     quiet: bool = False
     verbose: bool = False
     profile_time: bool = False
@@ -164,6 +169,11 @@ def execute_run(
 
     context = context or RunExecutionContext()
     final_output_dir = Path(request.output_dir).expanduser().resolve()
+    protected_inputs = [request.ref, request.mov, request.mapping_file]
+    if request.resolved_input_policies is not None:
+        protected_inputs.extend([request.resolved_input_policies.identity_ref.mapping_file,
+                                 request.resolved_input_policies.identity_mov.mapping_file])
+    protect_input_directory(request.output_dir, protected_inputs)
     if request.manifest_output is not None:
         requested_manifest = Path(request.manifest_output).expanduser().resolve()
         required_manifest = final_output_dir / "run_manifest.json"
@@ -216,7 +226,7 @@ def _preflight_request_from_args(
         output_dir=getattr(args, "output_dir", "cryorole_outputs"),
         row_aligned=bool(getattr(args, "row_aligned", False)),
         allow_low_overlap=bool(getattr(args, "allow_low_overlap", False)),
-        sld_metric=getattr(args, "sld_metric", "rotvec_euclidean"),
+        sld_metric=getattr(args, "sld_metric", DEFAULT_SLD_METRIC),
         k_neighbors=int(getattr(args, "k_neighbors", 50)),
         run_backend=getattr(args, "run_backend", "auto"),
         density_query_batch_size=int(getattr(args, "density_query_batch_size", 25000)),
@@ -481,13 +491,14 @@ def _run_command_impl(
     raw_active_policies = dict(raw_landscape.active_policies or {})
     raw_active_policies["representation_policy"] = representation_policy
     raw_landscape.active_policies = raw_active_policies
+    row_count = raw_arrays.n_points if raw_arrays is not None else len(raw_landscape.data)
     bundle_writer.set_state("writing")
     with reporter.timed_stage(
         "write_npz",
         label="writing raw landscape NPZ",
         stage_number=5,
         stage_total=8,
-        row_count=len(raw_landscape.data),
+        row_count=row_count,
     ):
         if run_backend_resolved == "array_native":
             raw_landscape_npz_path = write_landscape_npz_arrays(
@@ -519,7 +530,7 @@ def _run_command_impl(
             label="writing raw landscape CSV",
             stage_number=6,
             stage_total=8,
-            row_count=len(raw_landscape.data),
+            row_count=row_count,
             raw_csv_chunk_size=args.raw_csv_chunk_size,
         ):
             if run_backend_resolved == "array_native":
@@ -541,7 +552,7 @@ def _run_command_impl(
     with reporter.timed_stage(
         "write_core_reports",
         label="writing core reports",
-        row_count=len(raw_landscape.data),
+        row_count=row_count,
     ):
         match_table_path = _write_csv_artifact(
             match_table_data,
@@ -1244,6 +1255,8 @@ def _write_run_quicklook(
                 density_report.sld_display_outlier_threshold
                 if density_report is not None else None
             ),
+            jobs=getattr(args, "jobs", None),
+            point_rendering=getattr(args, "point_style", "scatter"),
         ),
     )
     return {

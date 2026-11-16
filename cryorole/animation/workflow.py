@@ -53,6 +53,10 @@ from cryorole.animation.transforms import (
     load_explicit_scene_basis,
     parse_ro_assertion,
     pivoted_scene_delta,
+    RO_DENSITY_DIRECTION_ACTIVE,
+    RO_DENSITY_DIRECTION_LEGACY_INVERSE,
+    RO_DENSITY_DIRECTION_POLICIES,
+    RO_DENSITY_DIRECTIONS,
     ro_target_to_active_delta,
 )
 from cryorole.animation.video import (
@@ -65,7 +69,11 @@ from cryorole.animation.video import (
     encode_mp4,
     validate_mp4,
 )
+from cryorole.logs import warn_user
 from cryorole.models.policies import AnimationPolicy
+from cryorole.io.landscape_resolver import resolve_landscape_path
+from cryorole.provenance.derived_sources import frame_input_paths
+from cryorole.provenance.output_paths import protect_input_directory
 
 
 @dataclass(frozen=True)
@@ -135,19 +143,36 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
     )
     structure_view_count = len(view_sessions)
     movie_name = _validated_movie_name(args.movie_name)
+    source_root = Path(args.run_dir)
+    protected_sources = [
+        source_root,
+        resolve_landscape_path(source_root, space=args.coordinate_set, canonical_id=args.canonical_id),
+        source_root / "run_summary.json", source_root / "run_manifest.json",
+        Path(args.path_csv), Path(args.chimerax_session),
+    ]
+    protected_sources.extend(Path(value) for value in (
+        getattr(args, "secondary_chimerax_session", None), getattr(args, "tertiary_chimerax_session", None),
+        args.map_frame_transform, args.axis_limits, args.chimerax_bin, args.ffmpeg_bin, args.ffprobe_bin,
+    ) if value)
+    if args.coordinate_set == "canonical" or args.map_frame == "canonical":
+        canonical_source = source_root / "canonical" / (args.canonical_id or "default")
+        protected_sources.extend(frame_input_paths(canonical_source / "canonical_frame.json"))
+        protected_sources.extend(canonical_source / name for name in (
+            "canonicalize_summary.json", "canonicalization_report.json",
+        ))
+    ro_direction = _resolved_ro_direction(args)
     output_dir = _prepare_output_directory(
         Path(args.output_dir),
         run_dir=run_dir,
-        protected_paths=tuple(
-            path
-            for path in (path_csv, *view_sessions.values())
-            if path is not None
-        ),
+        protected_paths=tuple(protected_sources),
         overwrite=bool(args.overwrite),
     )
     log_path = output_dir / "logs" / "cryorole_animate.log"
     manifest_path = output_dir / "manifest.json"
     warnings: list[str] = []
+    if ro_direction == RO_DENSITY_DIRECTION_LEGACY_INVERSE:
+        warnings.append(LEGACY_INVERSE_WARNING)
+        warn_user(LEGACY_INVERSE_WARNING)
     return_code = None
     ffmpeg_return_code = None
     ffprobe_return_code = None
@@ -250,7 +275,9 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
             [
                 pivoted_scene_delta(
                     conjugate_active_delta(
-                        ro_target_to_active_delta(rotation, baseline).as_matrix(),
+                        ro_target_to_active_delta(
+                            rotation, baseline, direction=ro_direction
+                        ).as_matrix(),
                         raw_to_scene,
                     ),
                     pivot,
@@ -619,6 +646,22 @@ def run_animation(args: SimpleNamespace | Any) -> AnimationResult:
         raise
 
 
+LEGACY_INVERSE_WARNING = (
+    "--ro-direction legacy-inverse turns the moving model by the inverse of the "
+    "physical relative rotation (pre-2026-10-12 behaviour); use it only to "
+    "reproduce older movies"
+)
+
+
+def _resolved_ro_direction(args) -> str:
+    direction = getattr(args, "ro_direction", None) or RO_DENSITY_DIRECTION_ACTIVE
+    if direction not in RO_DENSITY_DIRECTIONS:
+        raise ValueError(
+            f"--ro-direction must be one of {', '.join(RO_DENSITY_DIRECTIONS)}"
+        )
+    return direction
+
+
 def _resolve_map_frame(args, canonical_frame):
     if args.map_frame == "raw":
         if args.map_frame_transform:
@@ -658,6 +701,7 @@ def _prepare_output_directory(
     protected_paths: tuple[Path, ...],
     overwrite: bool,
 ) -> Path:
+    protect_input_directory(path, protected_paths)
     output = path.resolve()
     if output == run_dir or output in run_dir.parents:
         raise ValueError("Animation output directory must not be the run directory or its parent")
@@ -833,6 +877,7 @@ def _success_manifest(
         encode_movie=args.render_mode == "execute" and not args.no_encode,
         crf=args.crf,
         movie_name=movie_name,
+        ro_density_direction=_resolved_ro_direction(args),
     )
     view_sessions = {"primary": primary_session}
     if secondary_session is not None:
@@ -882,6 +927,10 @@ def _success_manifest(
         "quaternion_storage_order": "wxyz",
         "quaternion_internal_order": "xyzw",
         "baseline_ro_assertion": baseline_metadata,
+        "ro_density_direction": _resolved_ro_direction(args),
+        "ro_density_direction_policy": dict(
+            RO_DENSITY_DIRECTION_POLICIES[_resolved_ro_direction(args)]
+        ),
         "map_session_frame": args.map_frame,
         "raw_to_scene_transform": raw_to_scene,
         "raw_to_scene_provenance": map_provenance,

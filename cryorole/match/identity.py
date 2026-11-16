@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -44,13 +45,14 @@ RELION_FORBIDDEN_IDENTITY_COLUMNS = {
     "_rlnOriginYAngst",
     "_rlnOriginZAngst",
 }
+_MISSING_IDENTITY = re.compile(r"""(?:[.?]|'\s*'|"\s*")?""")
 
 
 def _normalize_value(value: Any, rule: str | None) -> str:
     if pd.isna(value):
         return ""
     normalized = str(value)
-    if not rule:
+    if not rule or _MISSING_IDENTITY.fullmatch(normalized.strip()):
         return normalized
     for step in rule.split("|"):
         if step == "strip":
@@ -65,6 +67,15 @@ def _normalize_value(value: Any, rule: str | None) -> str:
     return normalized
 
 
+def _require_identity_values(values: pd.Series, label: str) -> None:
+    if values.empty:
+        return
+    missing = values.astype("string").str.strip().str.fullmatch(_MISSING_IDENTITY, na=True)
+    if missing.any():
+        rows = values.index[missing][:5].tolist()
+        raise IdentityResolutionError(f"Found missing identity values in {label} at source rows {rows}")
+
+
 def _build_keys(table: pd.DataFrame, policy: IdentityPolicy) -> pd.Series:
     missing = [column for column in policy.identity_columns if column not in table.columns]
     if missing:
@@ -73,7 +84,9 @@ def _build_keys(table: pd.DataFrame, policy: IdentityPolicy) -> pd.Series:
     key_parts = []
     for column in policy.identity_columns:
         rule = policy.column_normalization_rules.get(column)
-        key_parts.append(table[column].map(lambda value: _normalize_value(value, rule)))
+        values = table[column].map(lambda value: _normalize_value(value, rule))
+        _require_identity_values(values, column)
+        key_parts.append(values)
 
     if len(key_parts) == 1:
         return key_parts[0].rename("particle_key")
@@ -92,7 +105,9 @@ def _build_keys_from_mapping_file(table: pd.DataFrame, policy: IdentityPolicy) -
     if not mapping_path.is_file():
         raise IdentityResolutionError(f"Mapping file does not exist: {mapping_path}")
 
-    mapping = pd.read_csv(mapping_path, sep=None, engine="python")
+    mapping = pd.read_csv(
+        mapping_path, sep=None, engine="python", dtype={"particle_key": str}, keep_default_na=False,
+    )
     required = {"source_row_id", "particle_key"}
     missing = required - set(mapping.columns)
     if missing:
@@ -108,7 +123,9 @@ def _build_keys_from_mapping_file(table: pd.DataFrame, policy: IdentityPolicy) -
         raise IdentityResolutionError(
             f"Mapping file does not cover source rows: {missing_rows[:5]}"
         )
-    return table.index.to_series().map(mapped).map(str).rename("particle_key")
+    keys = table.index.to_series().map(mapped).rename("particle_key")
+    _require_identity_values(keys, "mapping file particle_key")
+    return keys
 
 
 def _build_row_aligned_keys(table: pd.DataFrame) -> pd.Series:

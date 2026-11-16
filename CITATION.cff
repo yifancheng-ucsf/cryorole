@@ -1,0 +1,57 @@
+cff-version: 1.2.0
+message: "If you use cryoROLE, please cite the methods paper below (preferred citation)."
+type: software
+title: "cryoROLE: cryo-EM Relative Orientation LandscapE"
+abstract: >-
+  cryoROLE computes per-particle relative orientations between two separately
+  refined, approximately rigid domains of a cryo-EM complex, maps them as a
+  landscape with a local sampling density (SLD), and exports particle subsets
+  from regions of that landscape as CryoSPARC or RELION metadata. It has a
+  command-line interface, a desktop GUI and a Python API.
+authors:
+  - family-names: Li
+    given-names: Chengmin
+    orcid: "https://orcid.org/0009-0001-3385-4163"
+version: 2.0.0a1
+license: BSD-3-Clause
+repository-code: "https://github.com/yifancheng-ucsf/cryorole"
+keywords:
+  - cryo-EM
+  - single-particle analysis
+  - conformational heterogeneity
+  - relative orientation
+  - rotation landscape
+preferred-citation:
+  type: article
+  title: "CryoROLE: describing large inter-domain rotation in single particle cryo-EM"
+  authors:
+    - family-names: Li
+      given-names: Chengmin
+      orcid: "https://orcid.org/0009-0001-3385-4163"
+    - family-names: Choi
+      given-names: Wooyoung
+    - family-names: Wu
+      given-names: Hao
+    - family-names: Cheng
+      given-names: Yifan
+  journal: bioRxiv
+  year: 2026
+  doi: 10.64898/2026.07.04.736454
+  url: "https://www.biorxiv.org/content/10.64898/2026.07.04.736454v1"
+references:
+  - type: article
+    title: "Structural dynamics of human fatty acid synthase in the condensing cycle"
+    authors:
+      - family-names: Choi
+        given-names: Wooyoung
+      - family-names: Li
+        given-names: Chengmin
+      - family-names: Chen
+        given-names: Yifei
+      - family-names: Wang
+        given-names: YongQiang
+      - family-names: Cheng
+        given-names: Yifan
+    journal: Nature
+    year: 2025
+    doi: 10.1038/s41586-025-08782-w

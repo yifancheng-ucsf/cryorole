@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 
 import numpy as np
@@ -46,6 +47,31 @@ def _make_landscape() -> Landscape:
             }
         )
     )
+
+
+@pytest.mark.parametrize("keys", [["001", "002"], ["01", "1"], ["NA", "null"], ["NaN", "p2"],
+                                  ["18446744073709551615", "18446744073709551614"]])
+def test_csv_roundtrip_preserves_identity_text_without_numeric_or_missing_inference(tmp_path, keys):
+    landscape = _make_landscape()
+    landscape.data["particle_key"] = keys
+    path = tmp_path / "landscape.csv"
+    write_raw_landscape_csv(landscape, path)
+    # Optional inherited numeric values still use normal CSV missing-value parsing.
+    with path.open(newline="") as handle:
+        rows = list(csv.reader(handle))
+    for row, value in zip(rows, ["parent_sld_raw", "", "2.0"]):
+        row.append(value)
+    with path.open("w", newline="") as handle:
+        csv.writer(handle).writerows(rows)
+    loaded = read_landscape_csv(path)
+    assert loaded.data.particle_key.tolist() == keys
+    np.testing.assert_array_equal(np.vstack(loaded.data.coordinates_analysis),
+                                  np.vstack(landscape.data.coordinates_analysis))
+    np.testing.assert_array_equal(loaded.data.sld_raw, landscape.data.sld_raw)
+    assert loaded.data.sld_raw.dtype.kind == "f"
+    assert loaded.data.sld_was_floored.tolist() == [False, False]
+    assert np.isnan(loaded.data.parent_sld_raw.iloc[0])
+    assert loaded.data.parent_sld_raw.iloc[1] == 2.0
 
 
 def test_read_landscape_json_rejects_unsupported_schema_version(tmp_path) -> None:

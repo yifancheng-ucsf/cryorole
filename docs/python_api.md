@@ -36,6 +36,22 @@ api.next_actions("my_run")
 | `align(ref, mov, **options)` | align report (dict) | `cryorole align` |
 | `fix_subtract_coordinates(job, **options)` | correction report (dict) | `cryorole align --fix-subtract-coordinates` |
 | `status(run_dir=None)`, `next_actions(run_dir=None)` | dict / list of dicts | `cryorole status`, `cryorole next` |
+| `inspect_input(path)` | `InputInspection`: candidates, chosen file and ambiguity note; read-only | (the GUI Inputs page) |
+| `export_preview(run_dir=None, *, domain="both")` | Source/result-group information, including unusable group notes; read-only | (the GUI Export preview) |
+| `open_landscape(run_dir=None, *, space="raw", canonical_id=None)` | `LandscapeView`: display filtering (`.apply(threshold=…, top_fraction=…, max_points_3d=…, color_vmax=…)`), coordinates, images and histograms; opening is read-only | (the GUI View page) |
+
+`LandscapeView.saved_selection_overlay(name)` reads and key-matches a saved
+Selection without evaluating a new draft. It requires a verified parent run ID
+and matching counts/keys. `LandscapeView.confirm(name, draft, frame=frame)` is
+the explicit standard Selection writer; `frame` records GUI display provenance
+while `draft` remains tied to its exact evaluated snapshot.
+
+`LandscapeView.save_figures(name, frame=frame, representation="euler",
+axis_ranges=((-180, 180),) * 3, views="2d,1d")` explicitly writes a new standard
+figure set through the public renderer. It stages output, rechecks parent
+identity and refuses overwrite. The frozen display controls are recorded;
+selection highlights and mouse pan/zoom are excluded. The GUI calls these
+methods in background tasks; Qt is not imported by this API.
 
 `**options` are the command's options with underscores instead of hyphens, for
 example `k_neighbors=30`, `no_visualize=True`, `fit_top_fraction=0.5`,

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Sequence
 
 from cryorole.io.readers.star_reader import locate_particle_loop
+from cryorole.io.writers.publication import ArtifactFiles
+from cryorole.export.subset_rows import validated_subset_rows
 
 
 @dataclass(frozen=True)
@@ -49,10 +51,8 @@ def write_relion_star_subset(
     output = Path(output_path)
     if not source.is_file():
         raise ValueError(f"RELION STAR source file does not exist: {source}")
-    if output.exists() and not overwrite:
-        raise FileExistsError(f"Output path already exists: {output}")
-
-    lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+    resolved_source = source.expanduser().resolve(strict=True)
+    lines = resolved_source.read_text(encoding="utf-8").splitlines(keepends=True)
     loop = locate_particle_loop(lines)
     if expected_source_row_count is not None and loop.row_count != int(expected_source_row_count):
         raise ValueError(
@@ -66,36 +66,19 @@ def write_relion_star_subset(
             f"STAR particle loop in {source} is missing required columns {missing_headers}; "
             "refusing to export."
         )
-    _validate_row_ids(row_ids, source_row_count=loop.row_count, row_id_field=row_id_field)
-    selected_lines = [_with_newline(lines[loop.data_line_indices[row_id]]) for row_id in row_ids]
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        "".join(lines[: loop.data_start] + selected_lines + lines[loop.data_end :]),
-        encoding="utf-8",
-    )
+    rows = validated_subset_rows(row_ids, source_row_count=loop.row_count, row_id_field=row_id_field, source_type='STAR')
+    selected_lines = [_with_newline(lines[loop.data_line_indices[row_id]]) for row_id in rows]
+    with ArtifactFiles({'metadata': output}, overwrite=overwrite, inputs=(source, resolved_source)) as publication:
+        publication.paths['metadata'].write_text(
+            "".join(lines[: loop.data_start] + selected_lines + lines[loop.data_end :]), encoding="utf-8",
+        )
     return StarSubsetResult(
         source_path=str(source),
         output_path=str(output),
-        selected_row_count=len(row_ids),
+        selected_row_count=len(rows),
         source_row_count=loop.row_count,
         row_id_field=row_id_field,
     )
-
-
-def _validate_row_ids(
-    row_ids: Sequence[int],
-    *,
-    source_row_count: int,
-    row_id_field: str,
-) -> None:
-    if len(set(row_ids)) != len(row_ids):
-        raise ValueError(f"{row_id_field} contains duplicate source row IDs")
-    out_of_bounds = [row_id for row_id in row_ids if row_id < 0 or row_id >= source_row_count]
-    if out_of_bounds:
-        raise ValueError(
-            f"{row_id_field} contains out-of-bounds row IDs for STAR source "
-            f"with {source_row_count} rows: {out_of_bounds[:5]}"
-        )
 
 
 def _with_newline(line: str) -> str:

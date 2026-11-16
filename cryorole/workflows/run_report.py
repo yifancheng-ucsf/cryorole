@@ -92,8 +92,9 @@ def _render_run_report(request: RunReportRequest) -> str:
                 [
                     "",
                     f"{density.n_inf_sld_unfloored}/{density.n_points} particles have all of their "
-                    f"k={density.effective_k_neighbors} nearest neighbours at exactly the same relative "
-                    "orientation, so their unfloored SLD (`sld_unfloored`) is +inf. "
+                    f"k={density.effective_k_neighbors} nearest neighbours at the same relative "
+                    "orientation (mean distance at most 1e-12 rad, i.e. identical up to floating-point "
+                    "rounding), so their unfloored SLD (`sld_unfloored`) is +inf. "
                     + (
                         "`sld_raw` stays finite for them because of the distance floor. "
                         if not density.n_inf_sld_raw

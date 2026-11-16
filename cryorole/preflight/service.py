@@ -8,12 +8,13 @@ from pathlib import Path
 import shlex
 from typing import Any
 
+from cryorole.core.density import DEFAULT_SLD_METRIC
 from cryorole.core.input_sanity import same_input_file
 from cryorole.export.serialization import to_json_safe
 from cryorole.models.policies import ConventionPolicy
 from cryorole.preflight.report import PREFLIGHT_SCHEMA_VERSION, PreflightResult
 from cryorole.preflight.resource_estimate import estimate_run_resources
-from cryorole.provenance import build_source_identity
+from cryorole.provenance import SourceIdentityGuard, build_source_identity
 from cryorole.workflows.run_pipeline import inspect_source_identity, preflight_and_normalize_matched_arrays
 from cryorole.workflows.input_policy import (
     InputPolicyRequest,
@@ -31,7 +32,7 @@ class PreflightRequest:
     output_dir: str | Path = "cryorole_outputs"
     row_aligned: bool = False
     allow_low_overlap: bool = False
-    sld_metric: str = "rotvec_euclidean"
+    sld_metric: str = DEFAULT_SLD_METRIC
     k_neighbors: int = 50
     run_backend: str = "auto"
     density_query_batch_size: int = 25_000
@@ -142,7 +143,7 @@ def run_preflight(
             "mov_only_count": match.dropped_mov_only_count,
             "reordered": match.matched_rows_reordered,
             "low_overlap_allowed": match.low_overlap_allowed,
-            "row_aligned": request.row_aligned,
+            "row_aligned": resolved.row_aligned,
             "status": match.status,
         }
         warnings.extend(str(value) for value in match.warnings)
@@ -187,7 +188,7 @@ def run_preflight(
             for finding in stale_subtraction_warnings((request.ref, request.mov)):
                 warnings.append(f"[{finding['code']}] {finding['message']}")
             overlap = float(matching.get("overlap_smaller_input", 0.0) or 0.0)
-            if not request.row_aligned and (errors or overlap < 0.5):
+            if not (request.row_aligned or request.identity_mode == "row_aligned") and (errors or overlap < 0.5):
                 align_diagnosis = diagnose_star_matching(request.ref, request.mov)
         except (ValueError, FileNotFoundError, OSError, KeyError) as exc:
             align_diagnosis = {"error": f"align diagnosis unavailable: {exc}"}
@@ -200,6 +201,7 @@ def run_preflight(
         raw_csv=request.raw_csv,
         visualize=request.visualize,
         output_dir=request.output_dir,
+        input_paths=(request.ref, request.mov),
     )
     if not resource["disk_sufficient_with_20pct_margin"]:
         errors.append("Estimated output exceeds available disk space with the 20% safety margin")
@@ -216,6 +218,12 @@ def run_preflight(
         environment = env_check["environment"]
         errors.extend(env_check["errors"])
         warnings.extend(env_check["warnings"])
+    if identities:
+        try:
+            SourceIdentityGuard(identities).assert_unchanged()
+        except (OSError, ValueError) as exc:
+            errors.append(str(exc))
+            phase = None
     readiness = "BLOCKED" if errors else ("READY_WITH_WARNINGS" if warnings else "READY")
     resolved_command = _resolved_run_command(request)
     report: dict[str, Any] = {
@@ -284,12 +292,24 @@ def _resolved_run_command(request: PreflightRequest) -> str:
     parts = ["cryorole", "run", "--ref", str(Path(request.ref).resolve()), "--mov", str(Path(request.mov).resolve())]
     if str(request.output_dir) != "cryorole_outputs":
         parts.extend(["--output-dir", str(Path(request.output_dir).resolve())])
+    for name, default in (("ref_domain", "ref"), ("mov_domain", "mov")):
+        if getattr(request, name) != default:
+            parts.extend(["--" + name.replace("_", "-"), getattr(request, name)])
     if request.row_aligned:
         parts.append("--row-aligned")
     if request.allow_low_overlap:
         parts.append("--allow-low-overlap")
-    if request.sld_metric != "rotvec_euclidean":
+    if request.sld_metric != DEFAULT_SLD_METRIC:
         parts.extend(["--sld-metric", request.sld_metric])
+    if request.k_neighbors != 50:
+        parts.extend(["--k-neighbors", str(request.k_neighbors)])
+    if request.run_backend != "auto":
+        parts.extend(["--run-backend", request.run_backend])
+    # Preflight's default is 25k; production run defaults to 100k. Always carry
+    # the assessed batch size instead of relying on a different command default.
+    parts.extend(["--density-query-batch-size", str(request.density_query_batch_size)])
+    if not request.raw_csv:
+        parts.append("--no-raw-csv")
     if not request.visualize:
         parts.append("--no-visualize")
     if request.identity_mode is not None:
@@ -341,6 +361,6 @@ def _diagnostic_matching(ref_keys, mov_keys, request: PreflightRequest) -> dict[
         "duplicate_ref_count": duplicate_ref,
         "duplicate_mov_count": duplicate_mov,
         "low_overlap_allowed": request.allow_low_overlap,
-        "row_aligned": request.row_aligned,
+        "row_aligned": request.row_aligned or request.identity_mode == "row_aligned",
         "status": "blocked",
     }

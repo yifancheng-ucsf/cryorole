@@ -56,7 +56,6 @@ def main() -> int:
         landscape,
         trajectory,
         explicit=None,
-        margin_degrees=2,
     )
     started = time.perf_counter()
     renderer = ProjectionRenderer(

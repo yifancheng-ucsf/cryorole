@@ -3,6 +3,29 @@
 This guide shows the recommended cryoROLE 2.0 workflow for CryoSPARC `.cs`
 metadata.
 
+## Which output should I use?
+
+Choose the **particle output containing 3D alignments** for each separately
+refined domain. A local refinement, or another refinement aligned to the chosen
+domain, can provide suitable poses; the actual requirement is `uid` plus
+`alignments3D/pose`, not a particular job label. A picking job or 2D result without
+3D poses is insufficient. Verify which domain was aligned by inspecting its map
+and processing history.
+
+In the GUI, **Job folder...** finds particle result groups with an `alignments3D`
+slot and offers the `.cs` named by that slot. Without a usable group candidate,
+it offers matching `*_particles.cs` files excluding passthrough files. If there
+are several candidates, choose the intended output; cryoROLE does not guess the
+latest iteration. **File...** lets you choose the pose `.cs` directly.
+
+Keep the job's `.csg` and its associated passthrough files available for later
+result-group export. A passthrough file alone is not the pose input unless it
+actually contains the required pose field. Two domains with independently picked
+particles need a validated association before this workflow: `uid` matching
+identifies existing shared particles, not biological partners inferred by proximity.
+
+For a GUI walkthrough, see the [README](../README.md#6-your-own-data).
+
 ## Inputs
 
 cryoROLE 2.0 treats `.cs` files as native inputs:
@@ -196,6 +219,30 @@ rematch, or write canonical/display coordinates back as physical source poses.
 Export first verifies the source `.cs` SHA-256 recorded by `run`. A moved file
 must be supplied explicitly with `--relocated-ref` / `--relocated-mov` and must
 match byte-for-byte; a changed or replaced `.cs` file is rejected.
+
+### Bringing a selection back into CryoSPARC
+
+```bash
+cryorole export --run-dir cryorole_outputs --selection-id high_sld --domain ref \
+  --cryosparc-group-ref /path/to/project/J75/J75_particles.csg
+```
+
+`--cryosparc-group-ref` is only needed when the run used a copy of the `.cs`
+file kept under its original name (the group names its files by name); when
+the run read the file from the job folder, the job's `.csg` is found
+automatically. The group and every file it names are checked before anything
+is written; if one is missing (for example a copy without its passthrough
+file), the export stops and writes nothing, and `--no-cryosparc-group` writes
+`selected_ref.cs` alone. The export writes `selected_ref.cs`, a subset of the job's
+passthrough file, and `selected_ref.csg`, and prints how to finish:
+
+1. Copy the three files into a folder inside the project directory, for example
+   `<project>/exports/groups/cryorole_J75_high_sld_ref/`. Import Result Group
+   rejects files outside the project. If the project belongs to the CryoSPARC
+   user, copy as that user (`sudo -u cryosparc mkdir -p …` and `sudo -u cryosparc cp …`).
+2. In CryoSPARC, run **Import Result Group** with the path of `selected_ref.csg`
+   in that folder. The particles keep their original poses, CTF and half-set
+   split, so a job such as Homogeneous Reconstruction Only can use them directly.
 
 ## Difference from 0.x Workflows
 

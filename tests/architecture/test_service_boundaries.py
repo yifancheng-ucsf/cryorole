@@ -66,6 +66,7 @@ def test_root_main_has_no_scientific_array_stack_imports() -> None:
         "next",
         "guide",
         "explore",
+        "gui",
         "visualize",
         "animate",
         "canonical-views",
@@ -102,7 +103,8 @@ def test_run_quicklook_uses_typed_visualization_service() -> None:
 
 
 # Library code below ``cryorole/`` never prints, exits or parses argv: the CLI
-# and API frontends own presentation. ``workflows/rotate_landscape.py`` is a
+# and GUI frontends own presentation (the GUI's child processes report to the
+# GUI over stdout). ``workflows/rotate_landscape.py`` is a
 # legacy stand-alone diagnostic script (``scripts/rotate_landscape.py``) whose
 # ``main()`` is the only exception; its library function
 # ``rotate_landscape_bundle`` is print-free.
@@ -136,7 +138,7 @@ def _frontend_calls(path: Path) -> set[str]:
 def test_library_code_outside_cli_has_no_print_exit_or_argparse() -> None:
     offenders = {}
     for path in sorted((ROOT / "cryorole").rglob("*.py")):
-        if (ROOT / "cryorole" / "cli") in path.parents:
+        if (ROOT / "cryorole" / "cli") in path.parents or (ROOT / "cryorole" / "gui") in path.parents:
             continue
         found = _frontend_calls(path) - _FRONTEND_EXCEPTIONS.get(path, set())
         if found:

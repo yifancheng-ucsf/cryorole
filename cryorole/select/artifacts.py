@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from cryorole.export.selection_export import export_selection
 from cryorole.export.serialization import to_json_safe
 from cryorole.export.landscape import write_json_artifact
+from cryorole.io.writers.publication import ArtifactDirectory
 from cryorole.models.policies import SelectionExportPolicy
 from cryorole.models.selection import Selection
 
@@ -54,8 +55,59 @@ class SelectionArtifactResult:
     export_report: object
 
 
-def write_selection_artifact(request: SelectionArtifactRequest) -> SelectionArtifactResult:
-    """Write the common CLI/interactive Selection artifact contract."""
+def write_selection_artifact(
+    request: SelectionArtifactRequest,
+    *,
+    publication: ArtifactDirectory | None = None,
+) -> SelectionArtifactResult:
+    """Publish a standard Selection, optionally with a caller's related artifacts.
+
+    An existing active publication lets the service include a selected-derived
+    landscape in this same group. Returned paths always name the public result.
+    """
+
+    if publication is not None:
+        if (Path(request.output_dir).resolve() != publication.output
+                or publication.committed or not publication.path.is_dir()):
+            raise ValueError('Selection writer requires its active output publication')
+        result = _write_selection_artifact(replace(request, output_dir=publication.path))
+        return _published_result(result, publication)
+    # The writer also supports an existing directory containing unrelated files.
+    # File-level overwrite intent is checked while holding the directory lock.
+    with ArtifactDirectory(request.output_dir, overwrite=True, label='Selection') as prepared:
+        _check_output_paths(prepared.output, overwrite=request.overwrite)
+        result = _write_selection_artifact(replace(request, output_dir=prepared.path))
+        _check_output_paths(prepared.output, overwrite=request.overwrite)
+        result = _published_result(result, prepared)
+    return result
+
+
+def _check_output_paths(output_dir: Path, *, overwrite: bool) -> None:
+    for name in ('selection.json', 'selected_particle_keys.csv', 'export_report.json',
+                 'selection.csv', 'selected_landscape_rows.csv', 'selection_summary.json'):
+        path = output_dir / name
+        if path.exists() or path.is_symlink():
+            if not path.is_file():
+                raise ValueError(f'Selection output is not a regular file: {path}')
+            if not overwrite:
+                raise FileExistsError(f'Output path already exists: {path}')
+
+
+def _published_result(result: SelectionArtifactResult, publication: ArtifactDirectory) -> SelectionArtifactResult:
+    return replace(result,
+        output_dir=publication.output,
+        selection_json=publication.publicize(result.selection_json),
+        selected_particle_keys_csv=publication.publicize(result.selected_particle_keys_csv),
+        selection_csv=publication.publicize(result.selection_csv),
+        selected_landscape_rows_csv=publication.publicize(result.selected_landscape_rows_csv),
+        selection_summary_json=publication.publicize(result.selection_summary_json),
+        export_report=replace(result.export_report,
+            output_paths=publication.publicize(result.export_report.output_paths),
+            export_policy=publication.publicize(result.export_report.export_policy)))
+
+
+def _write_selection_artifact(request: SelectionArtifactRequest) -> SelectionArtifactResult:
+    """Prepare the common CLI/interactive files inside a private publication."""
 
     selection = request.selection
     rows = request.selected_rows

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from uuid import uuid4
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from cryorole.core.display_policy import resolve_display_indices
 from cryorole.export import read_landscape_npz_arrays, read_selection_json
 from cryorole.io.landscape_resolver import resolve_landscape_path
 from cryorole.models.policies import SelectionPolicy
@@ -45,6 +47,7 @@ class ExploreSession:
         display_threshold: float | None = None,
         display_top_fraction: float | None = None,
         colormap: str = "viridis",
+        interaction_source: str = "cryorole_explore",
     ) -> None:
         if max_display_points < 1:
             raise ValueError("max_display_points must be positive")
@@ -65,6 +68,7 @@ class ExploreSession:
         self.arrays = read_landscape_npz_arrays(self.landscape_path)
         self.coordinates = self._coordinates_for_space()
         self.run_id, self.euler_sequence, self.euler_convention = self._run_metadata()
+        self.interaction_source = interaction_source  # recorded in confirmed selections
         self.session_token = uuid4().hex
         self.session_id = f"explore-{uuid4().hex[:12]}"
         self.colormap = colormap
@@ -104,7 +108,7 @@ class ExploreSession:
             "full_candidate_count": self.arrays.n_points,
             "displayed_point_count": len(indices),
             "sampling_policy": "deterministic_even_index_after_display_filter",
-            "display_filter": self.display_filter,
+            "display_filter": deepcopy(self.display_filter),
             "selection_evaluation": "exact_full_parent_landscape",
             "colormap": self.colormap,
             "points": {
@@ -145,9 +149,10 @@ class ExploreSession:
         center_euler = Rotation.from_rotvec(center_rv).as_euler(
             self.euler_sequence, degrees=True
         )
-        self._draft = {
+        draft = {
             "artifact_type": "cryorole_selection_draft",
             "schema_version": "1.0",
+            "draft_id": uuid4().hex,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": self.run_id,
             "landscape_sha256": self.landscape_sha256,
@@ -174,29 +179,46 @@ class ExploreSession:
             "display_filter": self.display_filter,
             "command_template": self._selection_command(center_rv, radius_deg, "SELECTION_ID"),
         }
-        self._draft["_selected_mask"] = selected
-        return {key: value for key, value in self._draft.items() if not key.startswith("_")}
+        draft["_selected_mask"] = selected
+        self._draft = draft
+        return deepcopy({key: value for key, value in draft.items() if not key.startswith("_")})
+
+    def draft_selected_mask(self, *, expected_draft_id: str | None = None) -> np.ndarray | None:
+        """Caller-owned exact mask of the last evaluated draft (None before evaluation)."""
+
+        draft = self._draft
+        if expected_draft_id is not None and (draft is None or draft["draft_id"] != expected_draft_id):
+            raise ValueError("The evaluated draft changed; evaluate again before confirming")
+        return None if draft is None else draft["_selected_mask"].copy()
 
     def confirm(
         self,
         selection_id: str,
         *,
+        expected_draft_id: str | None = None,
         expected_run_id: str | None = None,
         expected_landscape_sha256: str | None = None,
+        display_provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if self._draft is None:
+        """Confirm one complete snapshot; an expected ID refuses another request's draft."""
+
+        draft = self._draft
+        if draft is None:
             raise ValueError("Evaluate a draft before confirming a scientific selection")
+        if expected_draft_id is not None and draft["draft_id"] != expected_draft_id:
+            raise ValueError("The evaluated draft changed; evaluate again before confirming")
         if not _SAFE_ID.fullmatch(selection_id):
             raise ValueError("selection_id must use only letters, numbers, '.', '_' or '-'")
         self._validate_identity(expected_run_id, expected_landscape_sha256, rehash=True)
         output_dir = self.run_dir / "selections" / selection_id
         if output_dir.exists():
             raise FileExistsError(f"Selection already exists and interactive confirm never overwrites: {output_dir}")
-        selected_mask = np.asarray(self._draft["_selected_mask"], dtype=bool)
+        selected_mask = np.asarray(draft["_selected_mask"], dtype=bool)
         selected_keys = tuple(self.arrays.particle_key[selected_mask].tolist())
         interaction = {
-            "source": "cryorole_explore",
+            "source": self.interaction_source,
             "session_id": self.session_id,
+            "draft_id": draft["draft_id"],
             "displayed_point_count": len(self.display_indices),
             "full_candidate_count": self.arrays.n_points,
             "sampling_policy": "deterministic_even_index_after_display_filter",
@@ -204,6 +226,9 @@ class ExploreSession:
             "selection_evaluation": "exact_full_parent_landscape",
             "overlay_selection_id": self.overlay_selection_id,
         }
+        if display_provenance is not None:  # display-only fields; the evaluation stays exact and full
+            interaction.update({key: value for key, value in display_provenance.items()
+                                if key not in ("source", "session_id", "full_candidate_count", "selection_evaluation")})
         parent_metadata = {
             "path": str(self.landscape_path),
             "sha256": self.landscape_sha256,
@@ -214,15 +239,15 @@ class ExploreSession:
         }
         policy = SelectionPolicy(
             selection_mode="radius_around_center",
-            center_input=tuple(self._draft["center_input"]),
-            center_input_representation=str(self._draft["center_input_representation"]),
+            center_input=tuple(draft["center_input"]),
+            center_input_representation=str(draft["center_input_representation"]),
             center_input_space="evaluation",
             center_euler_convention=self.euler_convention,
             center_scipy_euler_sequence=self.euler_sequence,
             center_degrees=True,
             evaluation_space="canonical" if self.space == "canonical" else "analysis",
             metric="so3_geodesic",
-            radius=float(self._draft["radius"]),
+            radius=float(draft["radius"]),
             radius_unit="degrees",
             top_fraction=None,
             parent_landscape_id=(self.canonical_id if self.space == "canonical" else "raw"),
@@ -246,7 +271,7 @@ class ExploreSession:
             center_euler_convention=self.euler_convention,
             center_scipy_euler_sequence=self.euler_sequence,
             center_degrees=True,
-            center_evaluated=tuple(self._draft["center_rv"]),
+            center_evaluated=tuple(draft["center_rv"]),
             evaluation_space=policy.evaluation_space,
             resolved_evaluation_space=policy.evaluation_space,
             radius=policy.radius,
@@ -263,7 +288,7 @@ class ExploreSession:
             "center_input": selection.center_input,
             "center_input_representation": selection.center_input_representation,
             "center_evaluated_rv": selection.center_evaluated,
-            "center_euler": self._draft["center_euler"],
+            "center_euler": draft["center_euler"],
             "euler_convention": self.euler_convention,
             "radius": selection.radius, "radius_unit": selection.radius_unit,
             "metric": selection.metric, "full_candidate_count": selection.total_count,
@@ -327,14 +352,9 @@ class ExploreSession:
         return {"mode": "all", "field": "sld_display"}
 
     def _display_filter_indices(self, threshold, top_fraction) -> np.ndarray:
-        indices = np.arange(self.arrays.n_points, dtype=np.int64)
-        if threshold is not None:
-            return indices[self.arrays.sld_display >= float(threshold)]
-        if top_fraction is not None:
-            count = max(1, int(np.ceil(self.arrays.n_points * float(top_fraction))))
-            order = np.lexsort((indices, -self.arrays.sld_display))
-            return np.sort(order[:count]).astype(np.int64)
-        return indices
+        return resolve_display_indices(
+            self.arrays.sld_display, threshold=threshold, top_fraction=top_fraction
+        ).astype(np.int64, copy=False)
 
     def _selection_overlay(self, selection_id: str | None) -> set[str]:
         if selection_id is None:

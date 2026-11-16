@@ -511,6 +511,36 @@ def test_near_degenerate_pca_axes_are_reported_not_failed():
     )
 
 
+@pytest.mark.parametrize("n_points", [2, 20])
+@pytest.mark.parametrize("backend", ["dataframe", "arrays"])
+def test_line_fit_reports_undetermined_transverse_axes(n_points, backend):
+    coordinates = np.column_stack([np.linspace(-0.2, 0.2, n_points), np.zeros((n_points, 2))])
+    policy = CanonicalizationPolicy(fit_subset="all", sign_rule="largest_component_positive")
+    if backend == "arrays":
+        output, report = canonicalize_landscape_arrays(_make_landscape_arrays(coordinates), policy=policy)
+        canonical = output.coordinates_canonical
+    else:
+        output = canonicalize_landscape(_make_landscape(coordinates), policy=policy)
+        report = output.canonicalization_report
+        canonical = np.vstack(output.data.coordinates_canonical)
+    assert report.axis_degeneracy_detected is True
+    assert any(w.startswith("near_degenerate_pca_axes") for w in report.warnings)
+    # The determined principal direction remains alpha (rotation-vector z).
+    np.testing.assert_allclose(np.abs(canonical[:, 2]), np.abs(coordinates[:, 0]), atol=1e-15)
+    np.testing.assert_allclose(canonical[:, :2], 0., atol=1e-15)
+
+
+@pytest.mark.parametrize("backend", ["dataframe", "arrays"])
+def test_distinct_planar_axes_are_not_marked_degenerate(backend):
+    coordinates = np.array([[-2., 0., 0.], [2., 0., 0.], [0., -1., 0.], [0., 1., 0.]])
+    policy = CanonicalizationPolicy(fit_subset="all", sign_rule="largest_component_positive")
+    if backend == "arrays":
+        _, report = canonicalize_landscape_arrays(_make_landscape_arrays(coordinates), policy=policy)
+    else:
+        report = canonicalize_landscape(_make_landscape(coordinates), policy=policy).canonicalization_report
+    assert report.axis_degeneracy_detected is False
+
+
 def test_ambiguous_density_weighted_signs_are_reported():
     coordinates = np.array(
         [

@@ -35,18 +35,60 @@ def canonical_rotation_to_raw(
     return Rotation.from_rotvec(raw_rv)
 
 
+RO_DENSITY_DIRECTION_ACTIVE = "active"
+RO_DENSITY_DIRECTION_LEGACY_INVERSE = "legacy-inverse"
+RO_DENSITY_DIRECTIONS = (RO_DENSITY_DIRECTION_ACTIVE, RO_DENSITY_DIRECTION_LEGACY_INVERSE)
+RO_DENSITY_DIRECTION_POLICIES: dict[str, dict[str, str]] = {
+    RO_DENSITY_DIRECTION_ACTIVE: {
+        "formula": "delta_active_raw = RO_target @ inverse(RO_baseline)",
+        "meaning": (
+            "RO = R_ref^-1 R_mov from internal active matrices (x_image = R x_map) is the "
+            "active rotation that carries the moving body from its own map frame into the "
+            "reference map frame; the moving model turns by RO_target relative to the "
+            "saved baseline, about the pivot"
+        ),
+        "validation": (
+            "synthetic two-body known truth, 2026-10-12: RELION relion_project/"
+            "relion_reconstruct poses, cryorole run (STAR and CryoSPARC), and the "
+            "generated ChimeraX renderer resampled on the reference grid"
+        ),
+    },
+    RO_DENSITY_DIRECTION_LEGACY_INVERSE: {
+        "formula": "delta_active_raw = inverse(RO_target @ inverse(RO_baseline))",
+        "meaning": (
+            "pre-2026-10-12 passive interpretation; turns the moving model by the inverse "
+            "of the physical relative rotation. Use only to reproduce older movies"
+        ),
+        "validation": "physically inverted against the 2026-10-12 synthetic known truth",
+    },
+}
+
+
 def ro_target_to_active_delta(
     target_ro: Rotation,
     baseline_ro: Rotation,
+    *,
+    direction: str,
 ) -> Rotation:
-    """Return the active density delta for a target passive RO assertion.
+    """Return the raw-frame active density delta that moves the baseline to a target RO.
 
-    ``delta_passive = RO_target @ inverse(RO_baseline)``, followed by
-    ``delta_active = inverse(delta_passive)``.
+    cryoROLE's ``RO = R_ref^-1 R_mov`` is built from internal active matrices
+    (``x_image = R @ x_map``), so the moving body appears in the reference
+    body's map frame turned actively by ``RO``. Matrices act on column vectors.
+
+    ``direction="active"`` (validated): ``delta = RO_target @ inverse(RO_baseline)``,
+    so a baseline session at ``RO_baseline`` moves to ``RO_target``.
+    ``direction="legacy-inverse"``: ``inverse(RO_target @ inverse(RO_baseline))``,
+    the pre-2026-10-12 passive interpretation, kept only to reproduce older movies.
     """
 
-    delta_passive = target_ro * baseline_ro.inv()
-    delta_active = delta_passive.inv()
+    if direction not in RO_DENSITY_DIRECTIONS:
+        raise ValueError(
+            f"RO density direction must be one of {', '.join(RO_DENSITY_DIRECTIONS)}"
+        )
+    delta_active = target_ro * baseline_ro.inv()
+    if direction == RO_DENSITY_DIRECTION_LEGACY_INVERSE:
+        delta_active = delta_active.inv()
     _validate_rotation_matrix(delta_active.as_matrix(), "active RO delta")
     return delta_active
 

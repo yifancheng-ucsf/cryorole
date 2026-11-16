@@ -36,6 +36,8 @@ from cryorole.io.readers.star_reader import (
 )
 from cryorole.align.star_values import angle_difference_deg, float_columns, optics_per_row
 from cryorole.provenance.source_identity import stream_sha256
+from cryorole.provenance import SourceIdentityGuard, build_source_identity
+from cryorole.io.writers.publication import ArtifactDirectory
 
 ORIGIN_TOLERANCE_ANGST = 2e-3
 ANGLE_TOLERANCE_DEG = 1e-5
@@ -62,6 +64,35 @@ def fix_subtract_coordinates(
     log=None,
 ) -> dict[str, Any]:
     """Correct the stale coordinates of a recentred RELION subtraction (see module docstring)."""
+
+    arguments = locals().copy()
+    target_path = Path(target)
+    if not target_path.is_dir() and not target_path.is_file():
+        raise FileNotFoundError(f"--fix-subtract-coordinates: {target_path} is neither a Subtract job folder nor a STAR file")
+    job_dir = target_path if target_path.is_dir() else target_path.parent
+    subtracted = target_path / "particles_subtracted.star" if target_path.is_dir() else target_path
+    if not subtracted.is_file():
+        raise FileNotFoundError(f"Subtracted STAR not found: {subtracted}")
+    destination = Path(output_dir) if output_dir is not None else _default_output_dir(job_dir)
+    protected = [path for path in (subtracted, subtract_input, apply_to) if path is not None]
+    source_records = {}
+    with ArtifactDirectory(destination, overwrite=overwrite, inputs=protected, allow_empty=True) as publication:
+        arguments.update(output_dir=publication.path, overwrite=True, publication=publication,
+                         source_records=source_records)
+        result = _fix_subtract_coordinates_impl(**arguments)
+        SourceIdentityGuard(source_records).assert_unchanged()
+        result = publication.publicize(result)
+    if log is None:
+        from cryorole.logs import notify_user as log
+    log(f"  wrote {result['outputs']['corrected_star']}")
+    return result
+
+
+def _fix_subtract_coordinates_impl(
+    target, *, subtract_input=None, center=None, model_angpix=None, micrograph_angpix=None,
+    apply_to=None, output_dir=None, overwrite=False, log=None, publication, source_records,
+) -> dict[str, Any]:
+    """Build one correction report and STAR in a private output directory."""
 
     if log is None:
         from cryorole.logs import notify_user as log
@@ -115,6 +146,10 @@ def fix_subtract_coordinates(
             f"Subtraction input STAR not found: {input_path}. Give --subtract-input with the refinement's run_data.star."
         )
 
+    source_paths = [subtracted, input_path, *([Path(apply_to)] if apply_to is not None else [])]
+    publication.protect(source_paths)
+    source_records.update({str(i): build_source_identity(path, source_type="relion", row_count=-1).to_dict()
+                           for i, path in enumerate(source_paths)})
     for path in (subtracted, input_path):
         headers = read_star_particle_headers(path)
         missing = [c for c in (*_COORDS, *_ORIGINS, *_ANGLES, "_rlnMicrographName") if c not in headers]
@@ -270,7 +305,15 @@ def fix_subtract_coordinates(
             raise ValueError(f"--apply-to: {apply_path} has no _rlnImageName column to identify particles")
         if len(set(target_names)) != len(target_names):
             raise ValueError(f"--apply-to: _rlnImageName is not unique in {apply_path}; particle identity is ambiguous")
-        source_by_name = {unquote_star_value(sub_index.columns["_rlnImageName"][i]): i for i in np.flatnonzero(verified)}
+        source_rows = np.flatnonzero(verified)
+        source_names = [unquote_star_value(sub_index.columns["_rlnImageName"][i]) for i in source_rows]
+        duplicates = [name for name, count in Counter(source_names).items() if count > 1]
+        if duplicates:
+            raise ValueError(
+                f"Subtracted source names among verified rows are not unique ({len(duplicates)} duplicate keys); "
+                "resolve the ambiguous source metadata before using --apply-to. No row is chosen by first or last occurrence."
+            )
+        source_by_name = dict(zip(source_names, source_rows))
         target_coords = float_columns(apply_index, _COORDS)
         rows, xs, ys = [], [], []
         counts = {"corrected": 0, "already_corrected": 0, "unmatched": 0, "unexpected": 0}
@@ -343,7 +386,6 @@ def fix_subtract_coordinates(
     report_path = out_dir / REPORT_NAME
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     report["report_path"] = str(report_path)
-    log(f"  wrote {outputs['corrected_star']}")
     return report
 
 

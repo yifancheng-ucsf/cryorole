@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from cryorole.core.density import DEFAULT_SLD_METRIC
 from cryorole.export import write_json_artifact
 from cryorole.export.serialization import to_json_safe
 from cryorole.interactive import ExploreSession, create_explore_server
@@ -239,7 +240,7 @@ def preflight_request_from_args(
         output_dir=getattr(args, "output_dir", "cryorole_outputs"),
         row_aligned=bool(getattr(args, "row_aligned", False)),
         allow_low_overlap=bool(getattr(args, "allow_low_overlap", False)),
-        sld_metric=getattr(args, "sld_metric", "rotvec_euclidean"),
+        sld_metric=getattr(args, "sld_metric", DEFAULT_SLD_METRIC),
         k_neighbors=int(getattr(args, "k_neighbors", 50)),
         run_backend=getattr(args, "run_backend", "auto"),
         density_query_batch_size=int(getattr(args, "density_query_batch_size", 25000)),

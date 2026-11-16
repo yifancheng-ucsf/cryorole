@@ -277,7 +277,7 @@ def test_dual_view_script_only_uses_layered_paths_and_keeps_sessions_unchanged(t
     assert main(arguments) == 0
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "scripts_ready"
-    assert manifest["schema_version"] == "8"
+    assert manifest["schema_version"] == "9"
     assert manifest["structure_view_count"] == 2
     assert manifest["session_transform_parity"]["status"] == "not_checked_script_only"
     assert (output / "chimerax" / "primary" / "render_structure.py").is_file()
@@ -335,7 +335,7 @@ def test_three_view_script_only_uses_layered_paths_and_keeps_sessions_unchanged(
     assert main(arguments) == 0
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "scripts_ready"
-    assert manifest["schema_version"] == "8"
+    assert manifest["schema_version"] == "9"
     assert manifest["structure_view_count"] == 3
     assert set(manifest["ChimeraX_sessions"]) == {"primary", "secondary", "tertiary"}
     for view in ("primary", "secondary", "tertiary"):

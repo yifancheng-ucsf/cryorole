@@ -18,6 +18,7 @@ from cryorole.cli.commands.downstream import (
     select_command,
     visualize_command,
 )
+from cryorole.cli.commands.gui import gui_command
 from cryorole.cli.commands.workflow import (
     explore_command,
     guide_command,
@@ -41,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
             "next": next_command,
             "guide": guide_command,
             "explore": explore_command,
+            "gui": gui_command,
             "visualize": visualize_command,
             "animate": animate_command,
             "canonical_views": canonical_views_command,

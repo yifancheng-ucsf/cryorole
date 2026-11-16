@@ -112,6 +112,62 @@ def test_auto_run_is_array_native_transactional_and_records_source_identity(tmp_
     assert len(rows) == arrays.n_points
 
 
+@pytest.mark.parametrize("backend", ["array_native", "dataframe_compat"])
+def test_write_progress_counts_all_rows_not_preview(tmp_path, monkeypatch, backend):
+    ref, mov = _inputs(tmp_path)
+    output = tmp_path / "run"
+    monkeypatch.setattr(run_service, "RUN_PREVIEW_MAX_POINTS", 2)
+    run_command(_run_args(ref, mov, output, "--run-backend", backend, "--profile-time"))
+
+    profile = json.loads((output / "reports/run_timing_profile.json").read_text())
+    stages = {item["stage"]: item for item in profile["stages"]}
+    arrays = read_landscape_npz_arrays(output / "data/raw_landscape.npz")
+    assert arrays.n_points == 6
+    with (output / "data/raw_landscape.csv").open(newline="") as handle:
+        assert len(list(csv.DictReader(handle))) == 6
+    for name in ("write_npz", "write_raw_csv", "write_core_reports"):
+        assert stages[name]["row_count"] == 6
+
+
+@pytest.mark.parametrize("backend", ["array_native", "dataframe_compat"])
+def test_run_rejects_source_link_retargeted_between_hashing_and_reading(tmp_path, monkeypatch, backend):
+    ref, mov = _inputs(tmp_path)
+    other = tmp_path / "other.cs"
+    payload = np.load(ref, allow_pickle=False)[::-1].copy()
+    with other.open("wb") as handle:
+        np.save(handle, payload)
+    alias = tmp_path / "ref_alias.cs"
+    alias.symlink_to(ref.name)
+    real_preflight = run_service.run_preflight
+
+    def retarget(request, **kwargs):
+        alias.unlink()
+        alias.symlink_to(other.name)
+        return real_preflight(request, **kwargs)
+
+    monkeypatch.setattr(run_service, "run_preflight", retarget)
+    output = tmp_path / "run"
+    with pytest.raises(ValueError, match="source path changed"):
+        run_command(_run_args(alias, mov, output, "--run-backend", backend))
+    assert not output.exists()
+    assert not (output / ".cryorole_bundle_complete").exists()
+
+
+@pytest.mark.parametrize("backend", ["array_native", "dataframe_compat"])
+def test_run_accepts_stable_source_link_and_preserves_recorded_rows(tmp_path, backend):
+    ref, mov = _inputs(tmp_path)
+    alias = tmp_path / "ref_alias.cs"
+    alias.symlink_to(ref.name)
+    output = tmp_path / "run"
+    run_command(_run_args(alias, mov, output, "--run-backend", backend))
+    arrays = read_landscape_npz_arrays(output / "data/raw_landscape.npz")
+    source = np.load(ref, allow_pickle=False)
+    assert arrays.particle_key.tolist() == source["uid"][arrays.ref_source_row_id].astype(str).tolist()
+    identity = json.loads((output / "run_summary.json").read_text())["source_identities"]["ref"]
+    assert identity["input_path_absolute"] == str(alias.absolute())
+    assert identity["resolved_path"] == str(ref.resolve())
+
+
 def test_array_native_run_writes_complete_quicklook_and_report(tmp_path) -> None:
     ref, mov = _inputs(tmp_path)
     output = tmp_path / "run"
